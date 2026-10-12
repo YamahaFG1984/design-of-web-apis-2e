@@ -1,0 +1,1133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 9 章 · 好用、可互操作的操作 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="9">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 9 章</span>
+<h1>好用、可互操作的操作</h1>
+<p class="lede">
+  想象一个购物 API：不管是属性名打错了、商品编号不存在还是商品缺货，「创建订单」一律只回一个光秃秃的 <code>400 Bad Request</code>。
+  开发者要花很久才能找到问题，最终用户则只能看到「无法提交订单」。
+  这一章把上一章的原则从数据扩展到<strong>整个操作</strong>：路径、输入、输出、列表功能、多种格式，以及最重要的 —— 错误处理。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>设计一看就懂、甚至不看也猜得到的路径</li>
+    <li>让输入容易提供：位置合适、与输出对应、尽量少</li>
+    <li>返回拿来即用的成功响应</li>
+    <li>为列表加上筛选、排序、分页，并返回元数据</li>
+    <li>用内容协商支持多种格式和语言</li>
+    <li>优雅地处理错误：少出错、状态码恰当、信息有用、机器可读、一次报全、采用标准</li>
+    <li>避免把多个能力藏在一个操作里；全程保持一致</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="what">好用的操作长什么样</h2>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#127919;</span><h4>能力清晰可见</h4><p>「租一辆车」而不是内部黑话「执行新交易」。往门店加车应该有专门的操作，而不是藏在「更新门店」里。</p></div>
+  <div class="card"><span class="ic">&#128230;</span><h4>数据好用</h4><p>上一章的原则适用于路径、参数、请求头、请求体和响应里的每一份数据。</p></div>
+  <div class="card"><span class="ic">&#129309;</span><h4>乐于助人</h4><p>默认只返回可租的车；缺了 <code>startDate</code> 就明说缺了它；顺手告诉你合同里还剩多少里程。</p></div>
+  <div class="card"><span class="ic">&#128302;</span><h4>一致且标准</h4><p>知道 <code>GET /shops</code>，就能猜出 <code>POST /shops</code> 和 <code>GET /shops/{shopId}</code>。<code>GET</code> 绝不会删东西。</p></div>
+</div>
+
+<p>
+  和数据一样，这些是<strong>第二遍</strong>设计时处理的。第一遍别纠结 <code>GET /shops/{shopId}/cars</code> 能不能简化成 <code>GET /cars</code>。
+  本章继续用银行 API 做例子。
+</p>
+
+<h2 id="paths">一看就懂、猜得到的路径</h2>
+
+<h3>有意义的路径 + 遵守 HTTP</h3>
+<p>
+  <code>/accounts</code> 一看就是账户列表，<code>/act</code> 则让人困惑。
+  配合标准方法，知道 <code>/customers</code> 是客户，就能猜到 <code>GET /customers</code> 是搜索、<code>POST /customers</code> 是新增。
+  <code>POST /add-customer</code> 虽然读得懂，却猜不到。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 只用这五个方法</div>
+  <p>HTTP 还定义了别的方法，但请只用 <code>POST</code>、<code>GET</code>、<code>PUT</code>、<code>PATCH</code>、<code>DELETE</code>（第 11 章会再加一个 <code>OPTIONS</code>），免得让开发者、他们的库和中间的 HTTP 设备措手不及。并且要尊重方法的含义：不要用 <code>GET</code> 修改数据。</p>
+</div>
+
+<h3>可预测：每一段都有明确用途</h3>
+
+<p>路径应该像文件系统路径一样严格分层。访问文件夹里的文件时，文件夹的名字不会变：</p>
+
+<div class="tw">
+<table>
+  <tr><th>不可预测</th><th>问题</th><th>可预测</th></tr>
+  <tr><td><code>/accounts</code> 和 <code>/account/{accountId}</code></td><td>单复数不一，没法从前者拼出后者</td><td><code>/accounts</code> 和 <code>/accounts/{accountId}</code></td></tr>
+  <tr><td><code>/savings/accounts/{accountId}</code><br><code>/checking/accounts/{accountId}</code></td><td><code>savings</code> 这一段是资源？是标识符？说不清</td><td><code>/savings-accounts/{accountId}</code><br>或者干脆 <code>/accounts/{accountId}</code></td></tr>
+</table>
+</div>
+
+<p>统一使用这个模式：</p>
+
+<div class="code" data-lang="text">
+<pre>
+/resources
+/resources/{identifier}
+/resources/{identifier}/sub-resources
+/resources/{identifier}/sub-resources/{sub-identifier}
+</pre>
+</div>
+
+<h3>短，但要准确</h3>
+
+<p>短路径更易读，也意味着要提供的输入更少。办法是<strong>利用全局唯一的 ID</strong>，从路径末尾往前逐段审视：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 360" role="img" aria-label="利用全局唯一 ID 缩短银行 API 的资源路径">
+  <text class="ttl" x="20" y="22">资源</text><text class="ttl" x="130" y="22">原路径（划掉的部分可以去掉）→ 缩短后</text>
+
+  <text class="lbl" x="20" y="54">交易</text>
+  <text class="mono sm" x="130" y="54"><tspan style="fill:var(--fg-faint);text-decoration:line-through">/customers/{customerId}/accounts/{accountId}</tspan>/transactions/{transactionId}</text>
+  <text class="mono sm on-g" x="130" y="74" font-weight="700">→ /transactions/{transactionId}</text>
+  <text class="sm" x="724" y="74" text-anchor="end">交易 ID 全局唯一，前面的都不需要</text>
+
+  <text class="lbl" x="20" y="114">账户的交易</text>
+  <text class="mono sm" x="130" y="114"><tspan style="fill:var(--fg-faint);text-decoration:line-through">/customers/{customerId}</tspan>/accounts/{accountId}/transactions</text>
+  <text class="mono sm on-g" x="130" y="134" font-weight="700">→ /accounts/{accountId}/transactions</text>
+  <text class="sm" x="724" y="134" text-anchor="end">账户 ID 全局唯一，不需要客户 ID</text>
+
+  <text class="lbl" x="20" y="174">账户</text>
+  <text class="mono sm" x="130" y="174"><tspan style="fill:var(--fg-faint);text-decoration:line-through">/customers/{customerId}</tspan>/accounts/{accountId}</text>
+  <text class="mono sm on-g" x="130" y="194" font-weight="700">→ /accounts/{accountId}</text>
+
+  <path class="ln-d" d="M20 214 H740"/>
+
+  <text class="lbl" x="20" y="244">客户的地址</text>
+  <text class="mono sm" x="130" y="244">/customers/{customerId}/addresses/{addressId}</text>
+  <text class="sm on-r" x="724" y="244" text-anchor="end" font-weight="700">不能缩短</text>
+  <text class="sm" x="130" y="264">addressId 是 home、fiscal 这样的值，不是全局唯一的，必须和 customerId 组合</text>
+
+  <text class="lbl" x="20" y="304">客户的账户</text>
+  <text class="mono sm" x="130" y="304">/customers/{customerId}/accounts</text>
+  <text class="sm on-r" x="724" y="304" text-anchor="end" font-weight="700">看含义</text>
+  <text class="sm" x="130" y="324">指「这位客户持有的账户」就不能缩；如果其实是「所有账户」，就是 /accounts。</text>
+  <text class="sm" x="130" y="342">两者可以并存</text>
+</svg>
+<figcaption>图 9-1　短路径也更通用：客户和分行都可以有账户（<code>/customers/{id}/accounts</code>、<code>/branches/{id}/accounts</code>），但单个账户始终是 <code>/accounts/{accountId}</code></figcaption>
+</figure>
+
+<h2 id="inputs">让输入容易提供</h2>
+
+<h3>1. 放在常规的、符合 HTTP 的位置</h3>
+
+<p>第 4 章讲过规则。这里看看<strong>不遵守</strong>会怎样。创建一笔转账需要付款账户、收款账户和金额：</p>
+
+<div class="tw">
+<table>
+  <tr><th>做法</th><th>样子</th><th>问题</th></tr>
+  <tr><td><span class="tag-g">合适</span> 资源表示放请求体</td><td><code>POST /transfers</code> + JSON 体</td><td>—</td></tr>
+  <tr><td><span class="tag-r">随意</span> 东一块西一块</td><td><code>POST /transfers?source=12345</code><br><code>Destination: 54321</code><br>体里只有 <code>amount</code></td><td>难懂、猜不到、不符合 HTTP</td></tr>
+  <tr><td><span class="tag-r">全放路径</span></td><td><code>POST /transfers/12345/54321/100/EUR</code></td><td>非层级数据塞进路径；参数堆叠后无法辨认；可选值怎么办？</td></tr>
+  <tr><td><span class="tag-r">全放查询参数</span></td><td><code>POST /transfers?source=12345&amp;destination=…</code></td><td>资源不在请求体里，不符合 HTTP；看不出数据结构</td></tr>
+  <tr><td><span class="tag-r">全放请求头</span></td><td><code>Source: 12345</code><br><code>Amount-Value: 100</code></td><td>非标准头；在日志和 API 客户端里常被隐藏</td></tr>
+</table>
+</div>
+
+<p>
+  搜索同理。<code>GET /accounts/12345/transactions?from=2024-01-01&amp;minAmount=100</code> 让标识符（路径）和修饰符（查询）一目了然。
+  如果全用查询参数（<code>GET /transactions?accountId=12345</code>），层级信息就丢了；还容易出现
+  <code>GET /transactions?accountId=…</code> 返回列表、<code>GET /transactions?transactionId=…</code> 却返回单个元素这种不一致。
+  如果全放请求体，就只能用 <code>POST /search-transactions</code> —— 资源没了，HTTP 统一接口带来的可预测性也没了。
+</p>
+
+<h3>2. 让输入与输出对应</h3>
+<p>
+  第 5 章从完整模型派生输入，就是为了这个：开发者读过一次账户，就能猜出创建账户要提供什么；
+  看到搜索交易的结果里有 <code>currency</code>，就会去试 <code>GET /transactions?currency=USD</code>。
+</p>
+
+<h3>3. 要众所周知或标准的数据</h3>
+<p>
+  <code>/accounts/{iban}</code>；货币筛选用 ISO 代码；转账请求体里的收付款账户用 IBAN。
+  标识符也不一定是不透明的随机串：一位客户每种类型的地址只有一个，那么地址的标识符就可以是固定的代码 ——
+  <code>/customers/1234/addresses/home</code>。
+</p>
+
+<h3>4. 用默认值和服务端推断来减少输入</h3>
+
+<p>转账可以立即执行、指定日期执行，或者周期执行。最初的设计要求消费者填一大堆：</p>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">一笔立即转账：填 7 项</div>
+    <div class="code" data-lang="json"><pre>
+{
+  "source": "FR123",
+  "destination": "FR543",
+  "amount": { "value": 100, "currency": "EUR" },
+  "type": "immediate",
+  "frequency": "none",
+  "date": "2024-01-01",
+  "endDate": "2024-01-01"
+}
+</pre></div>
+  </div>
+  <div class="new">
+    <div class="h">精简后：填 3 项</div>
+    <div class="code" data-lang="json"><pre>
+{
+  "source": "FR123",
+  "destination": "FR543",
+  "amount": { "value": 100 }
+}
+
+// 延期转账：再加 "date": "2024-06-01"
+// 周期转账：再加 "frequency": "monthly"
+</pre></div>
+  </div>
+</div>
+
+<ul>
+  <li><code>type</code> 可以由服务端<strong>推断</strong>：只有三要素是立即转账；多了 <code>date</code> 是延期；有 <code>frequency</code> 是周期。</li>
+  <li><code>currency</code> 可选，<strong>默认</strong>用付款账户的币种。</li>
+  <li>周期转账的起止日期可选：默认从今天开始，没有 <code>endDate</code> 就一直执行到用户终止。</li>
+</ul>
+
+<div class="box warn">
+  <div class="t">&#9888; 不是什么都能让服务端代填</div>
+  <p>银行卡交易的发生时间不能由服务端用「收到请求的时间」来填 —— 这笔交易可能在几分钟甚至几小时后才传到服务端。把不该可选的数据设为可选，会得到不准确的数据。</p>
+</div>
+
+<h2 id="outputs">返回拿来即用的成功响应</h2>
+
+<ul>
+  <li>
+    <strong>用恰当的状态码和符合 HTTP 的位置。</strong>技术上可以自定义一个 <code>299 Money Transfer Created</code>，别人看到 2 开头也知道是成功 ——
+    但它会让开发者意外，还可能在他们的代码或中间设备上出问题。老老实实用 <code>201 Created</code>，数据放响应体。
+  </li>
+  <li>
+    <strong>返回信息量足够的数据。</strong>
+  </li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="交易列表使用最小、摘要、完整三种模型的对比">
+  <rect class="bx-r" x="20" y="24" width="226" height="176" rx="12"/>
+  <text class="ttl on-r" x="133" y="48" text-anchor="middle">最小模型</text>
+  <text class="mono sm" x="38" y="76">[ { "id": "123" },</text>
+  <text class="mono sm" x="38" y="92">  { "id": "456" } ]</text>
+  <text class="sm" x="133" y="140" text-anchor="middle">没有任何有用的信息</text>
+  <text class="sm" x="133" y="158" text-anchor="middle">每条交易都得再调一次</text>
+  <text class="mono sm" x="133" y="176" text-anchor="middle">GET /transactions/{id}</text>
+
+  <rect class="bx" x="267" y="24" width="226" height="176" rx="12"/>
+  <text class="ttl" x="380" y="48" text-anchor="middle">摘要模型</text>
+  <text class="mono sm" x="285" y="76">[ { "id": "123",</text>
+  <text class="mono sm" x="285" y="92">    "amount": 100,</text>
+  <text class="mono sm" x="285" y="108">    "date": "2024-04-06" } ]</text>
+  <text class="sm" x="380" y="158" text-anchor="middle">好一些，但缺少描述、商户、</text>
+  <text class="sm" x="380" y="176" text-anchor="middle">类型这些人人都想看的信息</text>
+
+  <rect class="bx-g" x="514" y="24" width="226" height="176" rx="12"/>
+  <text class="ttl on-g" x="627" y="48" text-anchor="middle">完整模型</text>
+  <text class="mono sm" x="532" y="76">[ { "id": "123",</text>
+  <text class="mono sm" x="532" y="92">    "amount": 100,</text>
+  <text class="mono sm" x="532" y="108">    "date": "2024-04-06",</text>
+  <text class="mono sm" x="532" y="124">    "description": "…",</text>
+  <text class="mono sm" x="532" y="140">    "origin": "…", … } ]</text>
+  <text class="sm" x="627" y="176" text-anchor="middle">开发者需要的都在这里</text>
+</svg>
+<figcaption>图 9-2　当「有用的信息」几乎就是全部数据时，列表里直接放完整模型（性能方面的考虑见第 13 章）</figcaption>
+</figure>
+
+<p>
+  <strong>创建和更新时，返回完整的资源</strong>，而不是只有 ID。服务端总会生成或修改一些消费者没发过来的数据：
+  一笔「立即」转账的执行日期可能因为节假日而不是今天。
+</p>
+
+<h2 id="lists">列表的筛选、排序与分页</h2>
+
+<p>
+  一个账户可能有成千上万笔交易，而消费者通常只要特定的一小部分：「2024 年 3 月 6 日在餐厅或酒吧、金额在 100（含）到 400（不含）之间、从大到小排的前 10 笔」。
+  如果接口一次返回全部，这件事就很难做。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="列表依次经过筛选、排序、分页三个步骤">
+  <rect class="bx" x="16" y="30" width="150" height="170" rx="10"/>
+  <text class="ttl" x="91" y="52" text-anchor="middle">全部元素</text>
+  <g class="mono sm">
+    <text class="mono sm" x="30" y="76">{id:1, v:"B"}</text><text class="mono sm" x="30" y="92">{id:2, v:"W"}</text>
+    <text class="mono sm" x="30" y="108">{id:3, v:"C"}</text><text class="mono sm" x="30" y="124">{id:4, v:"X"}</text>
+    <text class="mono sm" x="30" y="140">{id:5, v:"Y"}</text><text class="mono sm" x="30" y="156">{id:6, v:"E"}</text>
+    <text class="mono sm" x="30" y="172">{id:7, v:"D"}</text><text class="mono sm" x="30" y="188">{id:8, v:"A"}</text>
+  </g>
+
+  <path class="ln-a" d="M166 115 H206" marker-end="url(#ar-a)"/>
+  <text class="lbl on-a" x="186" y="104" text-anchor="middle">筛选</text>
+  <text class="sm" x="186" y="134" text-anchor="middle">A–E</text>
+
+  <rect class="bx-a" x="208" y="30" width="150" height="170" rx="10"/>
+  <text class="ttl on-a" x="283" y="52" text-anchor="middle">符合条件的</text>
+  <text class="mono sm" x="222" y="76">{id:1, v:"B"}</text>
+  <text class="mono sm" x="222" y="108">{id:3, v:"C"}</text>
+  <text class="mono sm" x="222" y="156">{id:6, v:"E"}</text>
+  <text class="mono sm" x="222" y="172">{id:7, v:"D"}</text>
+  <text class="mono sm" x="222" y="188">{id:8, v:"A"}</text>
+
+  <path class="ln-b" d="M358 115 H398" marker-end="url(#ar-b)"/>
+  <text class="lbl on-b" x="378" y="104" text-anchor="middle">排序</text>
+  <text class="sm" x="378" y="134" text-anchor="middle">按 v</text>
+
+  <rect class="bx-b" x="400" y="30" width="150" height="170" rx="10"/>
+  <text class="ttl on-b" x="475" y="52" text-anchor="middle">排好序的</text>
+  <text class="mono sm" x="414" y="76">{id:8, v:"A"}</text>
+  <text class="mono sm" x="414" y="92">{id:1, v:"B"}</text>
+  <text class="mono sm" x="414" y="108">{id:3, v:"C"}</text>
+  <text class="mono sm" x="414" y="124">{id:7, v:"D"}</text>
+  <text class="mono sm" x="414" y="140">{id:6, v:"E"}</text>
+
+  <path class="ln-g" d="M550 115 H590" marker-end="url(#ar-g)"/>
+  <text class="lbl on-g" x="570" y="104" text-anchor="middle">分页</text>
+  <text class="sm" x="570" y="134" text-anchor="middle">3/页</text>
+
+  <rect class="bx-g" x="592" y="30" width="152" height="84" rx="10"/>
+  <text class="ttl on-g" x="668" y="50" text-anchor="middle">第 1 页</text>
+  <text class="mono sm" x="606" y="70">{id:8, v:"A"}</text><text class="mono sm" x="606" y="86">{id:1, v:"B"}</text><text class="mono sm" x="606" y="102">{id:3, v:"C"}</text>
+  <rect class="bx-g" x="592" y="124" width="152" height="76" rx="10"/>
+  <text class="ttl on-g" x="668" y="144" text-anchor="middle">第 2 页</text>
+  <text class="mono sm" x="606" y="164">{id:7, v:"D"}</text><text class="mono sm" x="606" y="180">{id:6, v:"E"}</text>
+</svg>
+<figcaption>图 9-3　筛选 → 排序 → 分页，三者都通过查询参数控制（它们是资源修饰符）</figcaption>
+</figure>
+
+<h3>筛选</h3>
+
+<ul>
+  <li>
+    <strong>筛选项对应返回的数据。</strong>交易有 <code>date</code>、<code>category</code>、<code>amount</code>，查询参数就叫同样的名字、用同样的类型：
+    <code>?date=2024-03-06&amp;category=restaurant&amp;amount=100</code>。嵌套属性用点号：<code>amount.value</code>。
+    不要按返回数据里没有的东西筛选 —— 消费者既猜不到这个筛选项存在，也无从核对结果。
+  </li>
+  <li>
+    <strong>筛选要灵活。</strong>不只是等于某个值：
+  </li>
+</ul>
+
+<div class="tw">
+<table>
+  <tr><th>类型</th><th>写法示例</th><th>说明</th></tr>
+  <tr><td>枚举</td><td><code>category=restaurant,bar</code></td><td>或 <code>category=restaurant&amp;category=bar</code>（第 7 章）</td></tr>
+  <tr><td>范围</td><td><code>amount=gte:100&amp;amount=lt:400</code><br>或 <code>amount.gte=100&amp;amount.lt=400</code></td><td><code>gt</code>/<code>gte</code>/<code>lt</code>/<code>lte</code> 明确表达了含不含边界；<code>minAmount</code>/<code>fromDate</code> 这类写法则不明确</td></tr>
+  <tr><td>宽松的值</td><td><code>date=2024-03</code>、<code>date=2024</code></td><td>省去写月/年范围的麻烦</td></tr>
+  <tr><td>模糊匹配</td><td><code>description=good</code></td><td>匹配「包含 good」而不是「等于 good」</td></tr>
+  <tr><td>自由搜索</td><td><code>q=nice restaurant last week</code></td><td>跨多个属性的文本搜索</td></tr>
+  <tr><td>查询语法</td><td><code>q=date:2024-03-06 AND (category:"restaurant" OR category:"bar")</code></td><td>不要自创语法，借用现成的（如 Lucene）</td></tr>
+</table>
+</div>
+
+<ul>
+  <li>
+    <strong>筛选项要节制，且必须可选。</strong>按需求挑选，不必每个属性都能筛；没人需要就不提供。
+    <code>GET /accounts/1234/transactions</code> 不带任何筛选应返回全部（的第一页）。
+    <strong>如果某个筛选项是必填的，多半是路径里少了一个标识符</strong>：<code>GET /transactions?accountId=12345</code>（必填）应该写成 <code>GET /accounts/12345/transactions</code>。
+  </li>
+</ul>
+
+<h3>排序</h3>
+<p>
+  <code>sort=date:desc,amount:asc</code>：先按日期降序，再按金额升序。<code>sort</code> 可选，并提供<strong>有用的默认顺序</strong> ——
+  大多数人想先看最近的交易，所以默认就是 <code>date:desc</code>。方向也可选，默认 <code>asc</code>。
+</p>
+
+<h3>分页</h3>
+
+<div class="tw">
+<table>
+  <tr><th>方式</th><th>写法</th><th>含义</th></tr>
+  <tr><td>基于页码（索引）</td><td><code>?page=3&amp;size=10</code></td><td>第 3 页，每页 10 条 → 第 21–30 条</td></tr>
+  <tr><td>基于游标</td><td><code>?after=2501&amp;size=25</code></td><td>游标 <code>2501</code> 之后的 25 条</td></tr>
+</table>
+</div>
+
+<p>
+  分页参数可选，并给出合理的默认值：一个月的交易适用于多数场景，而普通账户一个月大约 40 笔，所以默认返回前 40 条。
+  两种分页方式的取舍和页大小的优化见第 13 章。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 标准不总是好选择</div>
+  <p>HTTP 有个 <code>Range</code> 头，理论上可以用来分页。但不建议：它本是为分段获取二进制数据设计的，中间设备可能把它去掉；分页参数和筛选排序参数分处两地也更难用；而且根本没人这么做。<strong>跟随通行做法。</strong></p>
+</div>
+
+<h3>返回元数据</h3>
+
+<p>
+  消费者没传参数时，用了什么默认值？后面还有没有数据？把这些<strong>列表的元数据</strong>一并返回。
+  它不是业务数据，所以响应不再是一个裸数组，而是一个把两者分开的对象：
+</p>
+
+<div class="code" data-lang="http" data-file="GET /accounts/12345/transactions?amount=gte:100&amp;amount=lt:400&amp;date=2024-03-06&amp;category=restaurant,bar">
+<pre>
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "data": [ ... ],
+  "metadata": {
+    "pagination": { "page": 1, "size": 40, "last": 10, "elements": 398 },
+    "sort": [
+      { "name": "date", "direction": "desc" }
+    ],
+    "filters": [
+      { "name": "amount",   "range": { "min": 100, "exclusiveMax": 400 } },
+      { "name": "date",     "value": "2024-03-06" },
+      { "name": "category", "enum": ["restaurant", "bar"] }
+    ]
+  }
+}
+</pre>
+</div>
+
+<p>请求里没给 <code>page</code>、<code>size</code>、<code>sort</code>，元数据如实告知了实际使用的默认值，还附带了最后一页的页码和总条数。</p>
+
+<h3>实现一个带筛选、排序、分页的列表操作</h3>
+
+<div class="tabs" data-title="GET /accounts/{accountId}/transactions">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+from fastapi import FastAPI, HTTPException, Query
+
+app = FastAPI()
+SORTABLE = {"date", "amount"}
+
+@app.get("/accounts/{account_id}/transactions")
+def search_transactions(
+    account_id: str,
+    category: str | None = Query(None, description="逗号分隔，如 restaurant,bar"),
+    date: str | None = Query(None, description="2024-03-06、2024-03 或 2024"),
+    sort: str = "date:desc",                 # 有用的默认顺序
+    page: int = Query(1, ge=1),              # 分页参数可选，带默认值
+    size: int = Query(40, ge=1, le=200),
+):
+    items = repository.transactions_of(account_id)
+
+    # ---- 筛选：参数名与返回数据的属性名一致 ----
+    categories = category.split(",") if category else None
+    if categories:
+        items = [t for t in items if t["category"] in categories]
+    if date:
+        items = [t for t in items if t["date"].startswith(date)]   # 宽松匹配：前缀即可
+
+    # ---- 排序：sort=date:desc,amount（方向默认 asc）----
+    criteria = []
+    for part in sort.split(","):
+        name, _, direction = part.partition(":")
+        direction = direction or "asc"
+        if name not in SORTABLE or direction not in ("asc", "desc"):
+            raise HTTPException(400, f"Unsupported sort '{part}'; sortable: {sorted(SORTABLE)}")
+        criteria.append({"name": name, "direction": direction})
+    for c in reversed(criteria):             # 从次要条件排到主要条件（稳定排序）
+        items.sort(key=lambda t: t[c["name"]], reverse=c["direction"] == "desc")
+
+    # ---- 分页 ----
+    total = len(items)
+    start = (page - 1) * size
+
+    return {
+        "data": items[start:start + size],
+        "metadata": {                        # 告诉消费者实际用了什么（含默认值）
+            "pagination": {"page": page, "size": size,
+                           "last": max(1, -(-total // size)), "elements": total},
+            "sort": criteria,
+            "filters": [f for f in (
+                {"name": "category", "enum": categories} if categories else None,
+                {"name": "date", "value": date} if date else None,
+            ) if f],
+        },
+    }
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+import { Hono } from "hono";
+
+const app = new Hono();
+const SORTABLE = ["date", "amount"] as const;
+type Transaction = { id: string; date: string; amount: number; category: string };
+
+app.get("/accounts/:accountId/transactions", (c) =&gt; {
+  let items: Transaction[] = repository.transactionsOf(c.req.param("accountId"));
+
+  // ---- 筛选：参数名与返回数据的属性名一致 ----
+  const categories = c.req.query("category")?.split(",");
+  const date = c.req.query("date");
+  if (categories) items = items.filter((t) =&gt; categories.includes(t.category));
+  if (date) items = items.filter((t) =&gt; t.date.startsWith(date));    // 宽松匹配：前缀即可
+
+  // ---- 排序：sort=date:desc,amount（方向默认 asc）----
+  const criteria = (c.req.query("sort") ?? "date:desc").split(",").map((part) =&gt; {
+    const [name, direction = "asc"] = part.split(":");
+    return { name, direction };
+  });
+  for (const { name, direction } of criteria) {
+    if (!SORTABLE.includes(name as never) || !["asc", "desc"].includes(direction)) {
+      return c.json({ message: `Unsupported sort '${name}:${direction}'; sortable: ${SORTABLE}` }, 400);
+    }
+  }
+  items.sort((a, b) =&gt; {
+    for (const { name, direction } of criteria) {
+      const [x, y] = [a[name as keyof Transaction], b[name as keyof Transaction]];
+      if (x !== y) return (x &lt; y ? -1 : 1) * (direction === "desc" ? -1 : 1);
+    }
+    return 0;
+  });
+
+  // ---- 分页：参数可选，带默认值 ----
+  const page = Number(c.req.query("page") ?? 1);
+  const size = Number(c.req.query("size") ?? 40);
+  const total = items.length;
+
+  return c.json({
+    data: items.slice((page - 1) * size, page * size),
+    metadata: {                              // 告诉消费者实际用了什么（含默认值）
+      pagination: { page, size, last: Math.max(1, Math.ceil(total / size)), elements: total },
+      sort: criteria,
+      filters: [
+        ...(categories ? [{ name: "category", enum: categories }] : []),
+        ...(date ? [{ name: "date", value: date }] : []),
+      ],
+    },
+  });
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+@RestController
+public class TransactionController {
+
+    record Pagination(int page, int size, int last, int elements) {}
+    record SortCriterion(String name, String direction) {}
+    record Metadata(Pagination pagination, List&lt;SortCriterion&gt; sort, List&lt;Map&lt;String, Object&gt;&gt; filters) {}
+    record TransactionList(List&lt;Transaction&gt; data, Metadata metadata) {}
+
+    private static final Map&lt;String, Comparator&lt;Transaction&gt;&gt; SORTABLE = Map.of(
+        "date", Comparator.comparing(Transaction::date),
+        "amount", Comparator.comparing(Transaction::amount));
+
+    @GetMapping("/accounts/{accountId}/transactions")
+    public TransactionList search(
+            @PathVariable String accountId,
+            @RequestParam(required = false) List&lt;String&gt; category,     // restaurant,bar
+            @RequestParam(required = false) String date,               // 2024-03-06、2024-03 或 2024
+            @RequestParam(defaultValue = "date:desc") String sort,     // 有用的默认顺序
+            @RequestParam(defaultValue = "1") int page,                // 分页参数可选，带默认值
+            @RequestParam(defaultValue = "40") int size) {
+
+        // ---- 筛选：参数名与返回数据的属性名一致 ----
+        Stream&lt;Transaction&gt; stream = repository.transactionsOf(accountId).stream();
+        if (category != null) stream = stream.filter(t -&gt; category.contains(t.category()));
+        if (date != null) stream = stream.filter(t -&gt; t.date().toString().startsWith(date));
+
+        // ---- 排序：sort=date:desc,amount（方向默认 asc）----
+        List&lt;SortCriterion&gt; criteria = new ArrayList&lt;&gt;();
+        Comparator&lt;Transaction&gt; comparator = null;
+        for (String part : sort.split(",")) {
+            String[] p = part.split(":");
+            String direction = p.length &gt; 1 ? p[1] : "asc";
+            Comparator&lt;Transaction&gt; byField = SORTABLE.get(p[0]);
+            if (byField == null || !List.of("asc", "desc").contains(direction)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Unsupported sort '" + part + "'; sortable: " + SORTABLE.keySet());
+            }
+            if (direction.equals("desc")) byField = byField.reversed();
+            comparator = comparator == null ? byField : comparator.thenComparing(byField);
+            criteria.add(new SortCriterion(p[0], direction));
+        }
+        List&lt;Transaction&gt; items = stream.sorted(comparator).toList();
+
+        // ---- 分页 ----
+        int total = items.size();
+        int from = Math.min((page - 1) * size, total);
+        int last = Math.max(1, (int) Math.ceil((double) total / size));
+
+        List&lt;Map&lt;String, Object&gt;&gt; filters = new ArrayList&lt;&gt;();
+        if (category != null) filters.add(Map.of("name", "category", "enum", category));
+        if (date != null) filters.add(Map.of("name", "date", "value", date));
+
+        return new TransactionList(
+            items.subList(from, Math.min(from + size, total)),
+            new Metadata(new Pagination(page, size, last, total), criteria, filters));   // 实际使用的值
+    }
+}
+</pre>
+</div>
+</div>
+
+<h2 id="adapt">适配请求与响应数据</h2>
+
+<h3>多种数据格式：内容协商</h3>
+
+<p>
+  HTTP 天生支持多种格式，靠的是<strong>内容协商</strong>。同一个资源可以有不同的<strong>表示</strong>：
+  很多人喜欢把交易导进电子表格分析，对他们来说 CSV 比 JSON 方便得多。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="同一个资源根据 Accept 请求头返回 JSON 或 CSV 两种表示">
+  <rect class="bx-b" x="20" y="20" width="350" height="200" rx="12"/>
+  <text class="mono sm" x="36" y="44">GET /accounts/12345/transactions</text>
+  <text class="mono sm on-a" x="36" y="60" font-weight="700">Accept: application/json</text>
+  <path class="ln-d" d="M36 72 H354"/>
+  <text class="mono sm" x="36" y="92">200 OK</text>
+  <text class="mono sm on-g" x="36" y="108" font-weight="700">Content-Type: application/json</text>
+  <text class="mono sm" x="36" y="132">{ "metadata": { … },</text>
+  <text class="mono sm" x="36" y="148">  "data": [</text>
+  <text class="mono sm" x="36" y="164">    { "id": 1, "amount": { "value": 100,</text>
+  <text class="mono sm" x="36" y="180">                "currency": "EUR" } },</text>
+  <text class="mono sm" x="36" y="196">    … ] }</text>
+
+  <rect class="bx-b" x="390" y="20" width="350" height="200" rx="12"/>
+  <text class="mono sm" x="406" y="44">GET /accounts/12345/transactions</text>
+  <text class="mono sm on-a" x="406" y="60" font-weight="700">Accept: text/csv</text>
+  <path class="ln-d" d="M406 72 H724"/>
+  <text class="mono sm" x="406" y="92">200 OK</text>
+  <text class="mono sm on-g" x="406" y="108" font-weight="700">Content-Type: text/csv</text>
+  <text class="mono sm" x="406" y="132">id,amount.value,amount.currency</text>
+  <text class="mono sm" x="406" y="148">1,100,"EUR"</text>
+  <text class="mono sm" x="406" y="164">2,200,"USD"</text>
+  <text class="sm" x="565" y="196" text-anchor="middle">（CSV 里没有列表元数据）</text>
+</svg>
+<figcaption>图 9-4　<code>Accept</code> 请求头说明「我想要什么格式」，<code>Content-Type</code> 响应头说明「我给的是什么格式」。不带 <code>Accept</code> 时默认返回 JSON</figcaption>
+</figure>
+
+<p>
+  请求也可以用不同格式：有些银行系统天生产出 XML，让它们发 <code>Content-Type: application/xml</code> 的请求体即可。
+  请求和响应的格式不必相同 —— 发 JSON、收 XML 完全可以。只支持对需求有意义的格式。
+</p>
+
+<div class="tabs" data-title="客户端：同一个资源，要不同的表示">
+<div class="code" data-lang="python">
+<pre>
+import httpx
+
+url = "https://api.bank.com/accounts/12345/transactions"
+
+as_json = httpx.get(url)                                  # 默认：JSON
+as_csv = httpx.get(url, headers={"Accept": "text/csv"})   # 同一个 URL，要 CSV
+
+print(as_csv.headers["Content-Type"])    # text/csv
+open("transactions.csv", "w").write(as_csv.text)
+
+# 标签要法语的（属性名和代码不会被翻译）
+fr = httpx.get(url, headers={"Accept-Language": "fr"}).json()
+print(fr["data"][0]["category"])         # {"code": "travel_agency", "label": "Agence de voyage"}
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const url = "https://api.bank.com/accounts/12345/transactions";
+
+const asJson = await fetch(url);                                   // 默认：JSON
+const asCsv = await fetch(url, { headers: { Accept: "text/csv" } }); // 同一个 URL，要 CSV
+
+console.log(asCsv.headers.get("Content-Type"));   // text/csv
+const csv = await asCsv.text();
+
+// 标签要法语的（属性名和代码不会被翻译）
+const fr = await (await fetch(url, { headers: { "Accept-Language": "fr" } })).json();
+console.log(fr.data[0].category);   // { code: "travel_agency", label: "Agence de voyage" }
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+RestClient api = RestClient.create("https://api.bank.com");
+String path = "/accounts/12345/transactions";
+
+TransactionList asJson = api.get().uri(path)                 // 默认：JSON
+    .retrieve().body(TransactionList.class);
+
+String asCsv = api.get().uri(path)                           // 同一个 URL，要 CSV
+    .accept(MediaType.parseMediaType("text/csv"))
+    .retrieve().body(String.class);
+
+// 标签要法语的（属性名和代码不会被翻译）
+TransactionList fr = api.get().uri(path)
+    .header(HttpHeaders.ACCEPT_LANGUAGE, "fr")
+    .retrieve().body(TransactionList.class);
+System.out.println(fr.data().get(0).category());   // Category[code=travel_agency, label=Agence de voyage]
+</pre>
+</div>
+</div>
+
+<h3>翻译与区域设置</h3>
+<p>
+  同样的机制可以用来翻译：消费者发 <code>Accept-Language: fr</code>，交易分类的标签就返回 <code>Agence de voyage</code> 而不是 <code>Travel agency</code>。
+  这个头可选，默认英语。它还支持变体（<code>fr-CA</code>）和带权重的优先级（<code>fr;q=0.9, it;q=0.8, *;q=0.5</code>）。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 只翻译给人看的值</div>
+  <p>属性名和代码<strong>不能</strong>翻译。如果 <code>category</code> 在法语下变成 <code>categorie</code>，<code>travel_agency</code> 变成 <code>agence_de_voyage</code>，想根据分类显示图标的开发者就没法写代码了。</p>
+</div>
+
+<h3>用查询参数微调返回数据</h3>
+<p>
+  <code>GET /accounts/1234?currency=EUR</code>：把余额换算成欧元返回（默认是美元）。查询参数用在「读取单个资源」上不常见，但完全合法。
+  注意别用这招大幅改变数据结构，或者返回完全不同的资源。
+</p>
+
+<h2 id="errors">优雅地处理消费者的错误</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 120" role="img" aria-label="优雅处理错误的六个方面">
+  <g>
+    <rect class="bx-g" x="16" y="30" width="112" height="60" rx="10"/><text class="ttl on-g" x="72" y="56" text-anchor="middle">① 少出错</text><text class="sm" x="72" y="74" text-anchor="middle">宽进严出</text>
+    <rect class="bx" x="139" y="30" width="112" height="60" rx="10"/><text class="ttl" x="195" y="56" text-anchor="middle">② 状态码恰当</text><text class="sm" x="195" y="74" text-anchor="middle">406 / 415 / 422</text>
+    <rect class="bx" x="262" y="30" width="112" height="60" rx="10"/><text class="ttl" x="318" y="56" text-anchor="middle">③ 信息有用</text><text class="sm" x="318" y="74" text-anchor="middle">说明怎么修</text>
+    <rect class="bx" x="385" y="30" width="112" height="60" rx="10"/><text class="ttl" x="441" y="56" text-anchor="middle">④ 机器可读</text><text class="sm" x="441" y="74" text-anchor="middle">来源 + 类型</text>
+    <rect class="bx" x="508" y="30" width="112" height="60" rx="10"/><text class="ttl" x="564" y="56" text-anchor="middle">⑤ 一次报全</text><text class="sm" x="564" y="74" text-anchor="middle">errors 列表</text>
+    <rect class="bx-a" x="631" y="30" width="113" height="60" rx="10"/><text class="ttl on-a" x="687" y="56" text-anchor="middle">⑥ 采用标准</text><text class="sm" x="687" y="74" text-anchor="middle">RFC 9457</text>
+  </g>
+</svg>
+<figcaption>图 9-5　错误处理的六个要点</figcaption>
+</figure>
+
+<h3>① 少出错：宽进严出</h3>
+
+<p>
+  软件界有条著名的<strong>波斯特尔法则</strong>（健壮性原则）：<em>对接收的东西宽容，对发出的东西严格</em>。
+</p>
+<ul>
+  <li>
+    消费者 <code>GET</code> 到一笔转账，改了点东西再 <code>PUT</code> 回去。如果因为请求体里多了不可修改的 <code>id</code> 就报 <code>400</code>，他们就得先手工剔除这些字段 —— 很烦。
+    更好的做法：<strong>忽略多余的数据</strong>，只在可修改的数据有问题时才报错。
+  </li>
+  <li>
+    时间只接受 UTC（<code>…T14:10:00Z</code>）对我们最省事，但带时区偏移的写法（<code>…T05:10:00+09:00</code>）也是合法的 ISO 8601。
+    <strong>都接受，返回时统一成 UTC</strong>。只给日期（<code>2024-03-10</code>）也接受更好。
+  </li>
+  <li>搜索没有结果时返回 <code>200</code> 加空列表，而不是 <code>404</code>。两者在 HTTP 上都说得通，但空列表让消费者的代码更简单、Bug 更少，也是通行做法。</li>
+</ul>
+
+<h3>② 用恰当的状态码</h3>
+
+<div class="tw">
+<table>
+  <tr><th>状态码</th><th>何时使用</th></tr>
+  <tr><td><code>400 Bad Request</code></td><td>请求有问题：JSON 无法解析、缺少必填项、违反业务规则……</td></tr>
+  <tr><td><code>422 Unprocessable Content</code></td><td>请求体能解析，但数据或业务规则校验没通过。比 <code>400</code>「更合乎 HTTP」，但作者偏好只用 <code>400</code> 统一处理请求体和查询参数的问题 —— 自己选，选了就一致</td></tr>
+  <tr><td><code>404 Not Found</code></td><td><strong>路径</strong>标识的资源不存在。<code>POST /transfers</code> 的请求体里付款账户不存在时<strong>不能</strong>返回 <code>404</code>（那表示 <code>/transfers</code> 不存在），应返回 <code>400</code>/<code>422</code></td></tr>
+  <tr><td><code>406 Not Acceptable</code></td><td>消费者用 <code>Accept</code> 或 <code>Accept-Language</code> 要了不支持的格式或语言</td></tr>
+  <tr><td><code>415 Unsupported Media Type</code></td><td>消费者发来的请求体是不支持的格式（<code>Content-Type</code>）</td></tr>
+</table>
+</div>
+
+<h3>③ 信息要有用，能指导修复</h3>
+
+<div class="tw">
+<table>
+  <tr><th>没用的反馈</th><th>有用的反馈</th></tr>
+  <tr><td><code>400</code>（空）</td><td>「缺少必填的付款账户 source」</td></tr>
+  <tr><td>「不支持 JPY」</td><td>「不支持 JPY；金额币种必须是 EUR 或 USD」</td></tr>
+  <tr><td><code>404</code>（空），路径是 <code>/customers/54321/addresses/home</code></td><td>「客户 54321 不存在」—— 说清楚是哪个路径参数没找到</td></tr>
+  <tr><td><code>415</code>（空）</td><td>带上 <code>Accept: application/json, application/xml</code> 响应头，并在响应体里再说一遍</td></tr>
+</table>
+</div>
+
+<h3>④ 机器可读</h3>
+<p>
+  光有一句人话不够。消费者的<strong>程序</strong>也需要理解错误 —— 比如在界面上把出错的输入框标红。加上：
+</p>
+<ul>
+  <li><code>source</code>：问题在哪。位置（<code>header</code> / <code>path</code> / <code>query</code> / <code>body</code>）、元素名，以及指向请求体内具体位置的 JSON Pointer；</li>
+  <li><code>type</code>：一个人能读的<strong>通用</strong>错误类型，如 <code>INVALID_FORMAT</code>、<code>INVALID_VALUE</code>。不要搞出几百个神秘的数字代码；</li>
+  <li><code>values</code>：（如果有）允许的取值。</li>
+</ul>
+
+<h3>⑤ 一次报全</h3>
+<p>
+  消费者发来一笔缺少收款账户、金额又超过余额的转账。如果只报第一个问题，他改完重试又撞上第二个 —— 想象一下这种体验出现在手机 App 的表单里。
+  实现应该<strong>一次做完所有可能的检查</strong>（包括结构校验和业务规则），把错误全部列出来。
+</p>
+
+<h3>⑥ 采用标准：Problem Details</h3>
+
+<p>
+  IETF 专门定义了一个错误格式的标准：<strong>Problem Details for HTTP APIs</strong>（RFC 9457），目的就是「让大家不必再各自发明错误响应格式」。它可以用自定义属性扩展。
+  把上面几点合在一起：
+</p>
+
+<div class="code" data-lang="http" data-file="POST /transfers 的错误响应">
+<pre>
+HTTP/1.1 422 Unprocessable Content
+Content-Type: application/problem+json
+
+{
+  "status": 422,
+  "type": "https://api.bank.com/validation-error",
+  "title": "The request is not valid",
+  "detail": "Missing destination account and unsupported amount currency",
+  "errors": [
+    {
+      "type": "https://api.bank.com/validation-error/required",
+      "title": "Missing required property",
+      "detail": "Destination account is missing",
+      "source": { "location": "body", "name": "destination", "pointer": "#/destination" }
+    },
+    {
+      "type": "https://api.bank.com/validation-error/invalid-value",
+      "title": "Invalid value",
+      "detail": "Unsupported JPY currency, the amount currency must be EUR or USD",
+      "source": { "location": "body", "name": "currency", "pointer": "#/amount/currency" },
+      "values": ["EUR", "USD"]
+    }
+  ]
+}
+</pre>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th>属性</th><th>来源</th><th>含义</th></tr>
+  <tr><td><code>Content-Type: application/problem+json</code></td><td>标准</td><td>让消费者确切知道这是哪种错误格式</td></tr>
+  <tr><td><code>status</code></td><td>标准</td><td>HTTP 状态码</td></tr>
+  <tr><td><code>type</code></td><td>标准</td><td>问题的类型；如果是 URL，可以打开它查看说明文档</td></tr>
+  <tr><td><code>title</code></td><td>标准</td><td>对类型的简短描述；同一类型每次都相同</td></tr>
+  <tr><td><code>detail</code></td><td>标准</td><td>对<em>这一次</em>问题的具体描述</td></tr>
+  <tr><td><code>errors</code></td><td>自定义扩展</td><td>详细的错误列表；每一项沿用标准的属性名，再加上 <code>source</code> 和 <code>values</code></td></tr>
+</table>
+</div>
+
+<h3>实现：一次校验，报全所有错误</h3>
+
+<div class="tabs" data-title="POST /transfers 的校验与 Problem Details">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+app = FastAPI()
+BASE = "https://api.bank.com/validation-error"
+CURRENCIES = ["EUR", "USD"]
+
+def error(kind: str, title: str, detail: str, name: str, pointer: str, **extra) -&gt; dict:
+    return {"type": f"{BASE}/{kind}", "title": title, "detail": detail,
+            "source": {"location": "body", "name": name, "pointer": pointer}, **extra}
+
+@app.post("/transfers", status_code=201)
+async def create_transfer(request: Request):
+    body = await request.json()
+    errors = []
+
+    # ---- 结构检查：不要遇到第一个错误就返回 ----
+    for name in ("source", "destination"):
+        if not body.get(name):
+            errors.append(error("required", "Missing required property",
+                                f"{name.capitalize()} account is missing", name, f"#/{name}"))
+
+    amount = body.get("amount") or {}
+    currency = amount.get("currency", "EUR")           # 可选，有默认值
+    if currency not in CURRENCIES:
+        errors.append(error("invalid-value", "Invalid value",
+                            f"Unsupported {currency} currency, the amount currency must be EUR or USD",
+                            "currency", "#/amount/currency", values=CURRENCIES))
+
+    # ---- 业务规则检查：和结构检查一起做 ----
+    source = accounts.find(body.get("source"))
+    if source and amount.get("value", 0) &gt; source.balance:
+        errors.append(error("insufficient-balance", "Insufficient balance",
+                            f"Amount exceeds the {source.balance} available on the source account",
+                            "value", "#/amount/value"))
+
+    if errors:
+        return JSONResponse(
+            status_code=422,
+            media_type="application/problem+json",
+            content={"status": 422, "type": BASE, "title": "The request is not valid",
+                     "detail": f"{len(errors)} problem(s) found in the request",
+                     "errors": errors})
+
+    return transfers.create(body)      # 多余的属性（如 id）被忽略：宽进
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+import { Hono } from "hono";
+
+const app = new Hono();
+const BASE = "https://api.bank.com/validation-error";
+const CURRENCIES = ["EUR", "USD"];
+
+type ApiError = {
+  type: string; title: string; detail: string;
+  source: { location: "body" | "query" | "path" | "header"; name: string; pointer?: string };
+  values?: string[];
+};
+
+app.post("/transfers", async (c) =&gt; {
+  const body = await c.req.json();
+  const errors: ApiError[] = [];
+
+  // ---- 结构检查：不要遇到第一个错误就返回 ----
+  for (const name of ["source", "destination"]) {
+    if (!body[name]) {
+      errors.push({
+        type: `${BASE}/required`, title: "Missing required property",
+        detail: `${name[0].toUpperCase()}${name.slice(1)} account is missing`,
+        source: { location: "body", name, pointer: `#/${name}` },
+      });
+    }
+  }
+
+  const currency: string = body.amount?.currency ?? "EUR";       // 可选，有默认值
+  if (!CURRENCIES.includes(currency)) {
+    errors.push({
+      type: `${BASE}/invalid-value`, title: "Invalid value",
+      detail: `Unsupported ${currency} currency, the amount currency must be EUR or USD`,
+      source: { location: "body", name: "currency", pointer: "#/amount/currency" },
+      values: CURRENCIES,
+    });
+  }
+
+  // ---- 业务规则检查：和结构检查一起做 ----
+  const source = await accounts.find(body.source);
+  if (source &amp;&amp; (body.amount?.value ?? 0) &gt; source.balance) {
+    errors.push({
+      type: `${BASE}/insufficient-balance`, title: "Insufficient balance",
+      detail: `Amount exceeds the ${source.balance} available on the source account`,
+      source: { location: "body", name: "value", pointer: "#/amount/value" },
+    });
+  }
+
+  if (errors.length &gt; 0) {
+    return c.body(
+      JSON.stringify({
+        status: 422, type: BASE, title: "The request is not valid",
+        detail: `${errors.length} problem(s) found in the request`, errors,
+      }),
+      422,
+      { "Content-Type": "application/problem+json" },
+    );
+  }
+
+  return c.json(await transfers.create(body), 201);   // 多余的属性（如 id）被忽略：宽进
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+// Spring 6 内建了 RFC 9457 的 ProblemDetail 类型，会自动使用 application/problem+json
+@RestController
+public class TransferController {
+
+    private static final String BASE = "https://api.bank.com/validation-error";
+    private static final List&lt;String&gt; CURRENCIES = List.of("EUR", "USD");
+
+    record Source(String location, String name, String pointer) {}
+    record ApiError(String type, String title, String detail, Source source, List&lt;String&gt; values) {}
+
+    @PostMapping("/transfers")
+    public ResponseEntity&lt;?&gt; createTransfer(@RequestBody TransferCreation body) {
+        List&lt;ApiError&gt; errors = new ArrayList&lt;&gt;();
+
+        // ---- 结构检查：不要遇到第一个错误就返回 ----
+        if (body.source() == null) errors.add(required("source", "Source account is missing"));
+        if (body.destination() == null) errors.add(required("destination", "Destination account is missing"));
+
+        String currency = Optional.ofNullable(body.amount().currency()).orElse("EUR");  // 可选，有默认值
+        if (!CURRENCIES.contains(currency)) {
+            errors.add(new ApiError(BASE + "/invalid-value", "Invalid value",
+                "Unsupported " + currency + " currency, the amount currency must be EUR or USD",
+                new Source("body", "currency", "#/amount/currency"), CURRENCIES));
+        }
+
+        // ---- 业务规则检查：和结构检查一起做 ----
+        accounts.find(body.source()).ifPresent(source -&gt; {
+            if (body.amount().value().compareTo(source.balance()) &gt; 0) {
+                errors.add(new ApiError(BASE + "/insufficient-balance", "Insufficient balance",
+                    "Amount exceeds the " + source.balance() + " available on the source account",
+                    new Source("body", "value", "#/amount/value"), null));
+            }
+        });
+
+        if (!errors.isEmpty()) {
+            ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.UNPROCESSABLE_ENTITY, errors.size() + " problem(s) found in the request");
+            problem.setType(URI.create(BASE));
+            problem.setTitle("The request is not valid");
+            problem.setProperty("errors", errors);            // 自定义扩展属性
+            return ResponseEntity.of(problem).build();
+        }
+
+        Transfer created = transfers.create(body);
+        return ResponseEntity.created(URI.create("/transfers/" + created.id())).body(created);
+    }
+
+    private ApiError required(String name, String detail) {
+        return new ApiError(BASE + "/required", "Missing required property", detail,
+            new Source("body", name, "#/" + name), null);
+    }
+}
+</pre>
+</div>
+</div>
+
+<h2 id="hidden">别把多个能力藏在一个操作里</h2>
+
+<p>第 2 章的能力识别已经降低了这种风险，但仍要警惕「全能型」操作。两个检查角度：</p>
+
+<h3>检查数据的粒度</h3>
+<ul>
+  <li><code>GET /accounts/{accountId}</code> 的响应里带着需要筛选、排序、分页的交易列表？ → 应该有独立的「搜索账户的交易」。（但一个明确叫「获取看板」、返回账户摘要和最近几笔交易的操作，是合理的。）</li>
+  <li>读取账户时会返回户主的地址，不代表「更新账户」（<code>PUT /accounts/{accountId}</code>）就该能改地址。账户和客户是两个概念 → <code>PUT /customers/{customerId}/addresses/{addressId}</code>。</li>
+</ul>
+
+<h3>检查操作的目的</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="关闭账户不应该通过更新账户状态来实现，而应有独立的操作；修改账户标题则可以用更新账户">
+  <rect class="bx-r" x="20" y="24" width="340" height="80" rx="10"/>
+  <text class="ttl on-r" x="36" y="48">&#10007; 关闭账户 = 更新状态？</text>
+  <text class="mono sm" x="36" y="70">PUT /accounts/{accountId}</text>
+  <text class="mono sm" x="36" y="88">{ …, "status": "closed" }</text>
+  <text class="sm" x="344" y="88" text-anchor="end">重要的动作被藏起来了</text>
+
+  <rect class="bx-g" x="400" y="14" width="340" height="140" rx="10"/>
+  <text class="ttl on-g" x="416" y="38">&#10003; 关闭账户值得一个独立的操作</text>
+  <text class="mono sm" x="416" y="62">POST /accounts/{accountId}/close</text><text class="sm" x="724" y="62" text-anchor="end">动作资源</text>
+  <text class="mono sm" x="416" y="82">POST /account-closures</text><text class="sm" x="724" y="82" text-anchor="end">结果资源</text>
+  <text class="mono sm" x="416" y="102">DELETE /accounts/{accountId}</text><text class="sm" x="724" y="102" text-anchor="end">也可以</text>
+  <text class="mono sm" x="416" y="122">POST /accounts/{accountId}/events</text><text class="sm" x="724" y="122" text-anchor="end">事件较多时</text>
+  <text class="sm" x="416" y="144">之后 GET 账户时，status 会反映发生过的事</text>
+  <path class="ln-a" d="M360 64 H398" marker-end="url(#ar-a)"/>
+
+  <rect class="bx" x="20" y="124" width="340" height="66" rx="10"/>
+  <text class="ttl" x="36" y="148">&#10003; 修改用户自定义的账户标题</text>
+  <text class="mono sm" x="36" y="170">PUT /accounts/{accountId}</text>
+  <text class="sm" x="344" y="170" text-anchor="end">不需要专门的操作</text>
+</svg>
+<figcaption>图 9-6　资源很重要，但别因此忘了能力。重要的业务动作应该作为独立的操作清晰可见</figcaption>
+</figure>
+
+<h2 id="consistency">一致与标准化</h2>
+
+<p>和数据一样：至少在 API 内部一致，最好和组织内其他 API、行业乃至全世界一致。操作层面要看三样东西。</p>
+
+<h3>数据</h3>
+<p>
+  <code>GET /customers</code> 返回「客户 ID」，创建账户却要求「客户引用」，后者要调 <code>GET /customers/{customerId}</code> 才拿得到 —— 两者都标识客户，却不是同一个值。
+  开发者会为此排查好几个小时。<strong>API 应该隐藏内部的复杂性</strong>，包括同一个东西有多个标识符这件事。
+</p>
+<p>
+  列表放在哪个属性里也要统一。可以用具体的名字（<code>transactions</code>、<code>accounts</code>），也可以用通用的名字（<code>data</code>、<code>items</code>）。
+  作者偏好通用的 —— 所有列表的访问方式完全相同，内容是什么看路径就知道。无论选哪种，<strong>所有列表操作都照此办理</strong>。
+</p>
+
+<h3>行为</h3>
+<div class="tw">
+<table>
+  <tr><th>一旦这个操作这样做了……</th><th>……其他同类操作就必须一样</th></tr>
+  <tr><td>创建转账返回 <code>201</code> + <code>Location</code> + 完整资源</td><td>创建客户不能返回 <code>200</code> + 只有 ID；创建账户不能返回 <code>204</code></td></tr>
+  <tr><td>搜索账户没结果时返回 <code>200</code> + 空列表</td><td>搜索交易没结果时不能返回 <code>404</code></td></tr>
+  <tr><td>转账失败返回 <code>422</code> + Problem Details + 错误列表</td><td>创建账户失败不能返回 <code>400</code> + 一句话</td></tr>
+  <tr><td><code>PUT /transfers/{id}</code> 接受完整模型（忽略多余属性）</td><td><code>PUT /owners/{id}</code> 不能因此报错</td></tr>
+</table>
+</div>
+
+<h3>功能</h3>
+<p>
+  「搜索账户交易」能分页，「搜索账户」和「搜索客户」也得能。参数的设计也要相同：
+  交易用 <code>amount=gt:400&amp;sort=amount:desc</code>，账户就该是 <code>balance=gt:2000&amp;sort=balance:asc</code>，而不是 <code>minBalance=2000&amp;order=balance,up</code>。
+  支持 XML 就所有操作都支持；搜索交易能返回 CSV，就考虑让其他搜索操作也能。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 三样东西自带标准化</div>
+  <p>尊重 HTTP 语义（方法、状态码、标准头）、使用第 5 章的典型模型、设计可预测的路径 —— 做到这三点，操作层面的大部分一致性就自动有了。</p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>好用的操作满足需求、能力清晰、数据好用、乐于助人，并且一致、标准。</li>
+  <li>路径要有意义、分层，每一段都有明确用途；利用全局唯一 ID 让路径短而准确。</li>
+  <li>输入要容易提供：位置符合 HTTP 惯例、与输出对应、使用众所周知或标准的数据、尽量少。能推断的就不要求，能给默认值的就设为可选。</li>
+  <li>创建和修改时返回完整资源；列表里不要吝啬有用的信息。</li>
+  <li>为列表和搜索操作提供筛选、排序、分页；所有查询参数都应可选（必填的往往意味着缺了路径参数）；返回相应的元数据；列表放在通用命名的属性里。</li>
+  <li>用内容协商（<code>Accept</code>、<code>Content-Type</code>）支持多种格式，用 <code>Accept-Language</code> 翻译 —— 只翻译给人看的值。</li>
+  <li>对输入宽容以减少错误：更新时接受完整模型、接受格式变体但返回统一格式、搜索无结果返回 <code>200</code> 和空列表。</li>
+  <li>错误反馈要描述问题并帮助修复，人和机器都能读，并且一次列出全部错误（结构检查和业务规则检查一起做）。</li>
+  <li>使用标准的错误格式，如 Problem Details for HTTP APIs。</li>
+  <li>确保每个操作粒度合适、没有隐藏别的能力。</li>
+  <li>输入输出数据、功能、行为，在操作内部和操作之间都要一致。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      健身追踪 API 搜索用户 5678 在 12 月 20–23 日的步行记录。用户 ID 和日期必填，运动类型可选。请改进它：
+      <div class="code" data-lang="http"><pre>
+POST /fitness/tracking/summary/exercises?user=5678
+
+{ "exerciseType": "walking", "fromStartDate": "2024-12-20", "endDate": "2024-12-23" }
+
+200 OK
+[ { "id": 123, "type": "walking", "startTime": 1734699900, "end": 1734702300,
+    "duration": "45 minutes", "distance": "3.5 kilometers" } ]
+</pre></div>
+      <details class="ans"><summary>参考答案</summary>
+        ① 搜索应该用 <code>GET</code>，筛选条件放查询参数。② <code>user</code> 是必填的 → 它是标识符，应进路径：<code>GET /users/5678/exercises?type=walking&amp;startTime=gte:2024-12-20&amp;startTime=lte:2024-12-23</code>；路径也短得多。
+        ③ 日期最好设为可选并给默认值（如最近 30 天）。④ 筛选项的名字应对应返回的属性（<code>type</code> 而非 <code>exerciseType</code>）。
+        ⑤ 响应：时间戳 → ISO 8601；<code>startTime</code>/<code>end</code> 命名不一致；<code>"45 minutes"</code>、<code>"3.5 kilometers"</code> 是格式化的字符串 → ISO 8601 时长 <code>"PT45M"</code>、<code>{"value": 3.5, "unit": "km"}</code>；
+        ⑥ 用 <code>{data, metadata}</code> 包起来并支持分页。
+      </details>
+    </li>
+    <li>
+      桌游资料 API 提供 <code>GET /games/{name}/classes.json</code>、<code>.xml</code>、<code>.csv</code>，以及 <code>GET /games/{name}/spells?format={format}</code>（必填）。怎么改进？
+      <details class="ans"><summary>参考答案</summary>
+        两种做法彼此不一致，而且都没用 HTTP 的标准机制。统一成 <code>GET /games/{name}/classes</code> 和 <code>GET /games/{name}/spells</code>，用 <code>Accept</code> 请求头做内容协商，不带时默认 JSON。
+      </details>
+    </li>
+    <li>
+      <code>PATCH /events/12345</code> + <code>{"date": "2024-12-26", "reason": "Venue conflict"}</code> 用来给活动改期。问题在哪？
+      <details class="ans"><summary>参考答案</summary>
+        「改期」是一个重要的业务动作（要通知参加者、可能触发退票），却被藏在通用的更新里；<code>reason</code> 也不是活动本身的属性，而是这次改期的属性。
+        应提供独立的操作，如 <code>POST /events/12345/reschedulings</code>（请求体是新日期和原因）。
+      </details>
+    </li>
+    <li>
+      IAM API 的 <code>POST /users</code> 收到一个把 <code>lastName</code> 错写成 <code>lastNam</code>、角色给了无效值 <code>administrator</code>（应为 <code>admin</code>）的请求，返回 <code>432 Missing And Invalid Data</code>，没有响应体。怎么修？
+      <details class="ans"><summary>参考答案</summary>
+        <code>432</code> 是自创的状态码 → 用 <code>400</code>（或 <code>422</code>）。响应体用 <code>application/problem+json</code>，在 <code>errors</code> 里<strong>同时</strong>列出两个问题：
+        缺少必填属性 <code>lastName</code>（pointer <code>#/lastName</code>）；<code>#/permissions/0/role</code> 的值无效，并在 <code>values</code> 里给出允许的角色。
+      </details>
+    </li>
+    <li>
+      医疗 API 记录血压时，设计者允许消费者不发测量时间（由服务端生成）和单位（固定 mmHg）。会有什么问题？
+      <details class="ans"><summary>参考答案</summary>
+        测量时间不该由服务端代填：设备可能离线，数据几小时后才上传，服务端生成的时间就是错的（和银行卡交易时间同理）—— 它应该必填，或至少可以提供。
+        另外输入（<code>"systolic": 120</code>）和输出（<code>{"value": 120, "unit": "mmHg"}</code>）结构不对应，消费者没法把读到的数据直接发回去；应该让输入也接受同样的结构，其中 <code>unit</code> 可选并有默认值。
+      </details>
+    </li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

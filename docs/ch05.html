@@ -1,0 +1,693 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 5 章 · 数据建模 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="5">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 5 章</span>
+<h1>数据建模</h1>
+<p class="lede">
+  上一章结束时，我们只知道「读取商品」的响应体里有一坨叫「商品信息」的东西。
+  这一章把它打开：商品是一个对象，有整数类型的编号、字符串类型的名称、浮点数类型的价格……
+  关键技巧是：<strong>先为资源设计一个完整模型，再从它派生出每个操作的输入和输出</strong>。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>知道要建模的是哪些数据，以及 JSON 的六种可移植类型</li>
+    <li>会设计资源的「完整（理论）模型」：选属性、起名、定类型、标必填</li>
+    <li>会从完整模型派生出七种典型模型，并知道它们各用在哪个操作上</li>
+    <li>会用数据反查遗漏的能力和业务错误</li>
+    <li>能检查数据是否通用、是否混入了提供者或某个消费者的视角</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="which">我们在为哪些数据建模</h2>
+
+<p>上一章为输入输出选了位置，现在要给这些位置里的东西定形：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 260" role="img" aria-label="需要建模的数据位于路径参数、查询参数、头字段和请求响应体中；API 数据可以与数据库里的数据不同">
+  <rect class="bx" x="20" y="24" width="330" height="36" rx="8"/>
+  <text class="mono" x="34" y="47">GET /products/<tspan class="on-g" font-weight="700">12345</tspan></text>
+  <text class="sm on-g" x="336" y="47" text-anchor="end">路径参数</text>
+
+  <rect class="bx" x="20" y="70" width="330" height="36" rx="8"/>
+  <text class="mono" x="34" y="93">GET /products?<tspan class="on-p" font-weight="700">category=BD</tspan></text>
+  <text class="sm on-p" x="336" y="93" text-anchor="end">查询参数</text>
+
+  <rect class="bx" x="20" y="116" width="330" height="126" rx="8"/>
+  <text class="mono" x="34" y="138">201 Created</text>
+  <text class="mono" x="34" y="156"><tspan class="on-b" font-weight="700">Location: /products/12345</tspan></text>
+  <text class="sm on-b" x="336" y="156" text-anchor="end">头字段</text>
+  <text class="mono sm" x="34" y="182">{ "productReference": 12345,</text>
+  <text class="mono sm" x="34" y="198">  "name": "Cowboy Bebop",</text>
+  <text class="mono sm" x="34" y="214">  "category": "BD", ... }</text>
+  <text class="sm on-a" x="336" y="214" text-anchor="end">体：资源的一种表示</text>
+
+  <rect class="bx-a" x="420" y="60" width="120" height="120" rx="12"/>
+  <text class="ttl on-a" x="480" y="100" text-anchor="middle">API 实现</text>
+  <text class="sm" x="480" y="124" text-anchor="middle">负责在两种</text>
+  <text class="sm" x="480" y="142" text-anchor="middle">形态之间转换</text>
+
+  <path class="ln" d="M350 120 H418" marker-end="url(#ar)" marker-start="url(#ar)"/>
+  <text class="sm" x="384" y="110" text-anchor="middle">API 数据</text>
+  <path class="ln-d" d="M540 120 H598" marker-end="url(#ar)" marker-start="url(#ar)"/>
+
+  <rect class="bx-d" x="600" y="50" width="140" height="140" rx="12"/>
+  <text class="ttl" x="670" y="78" text-anchor="middle">数据库</text>
+  <text class="mono sm" x="670" y="104" text-anchor="middle">PRD_REF</text>
+  <text class="mono sm" x="670" y="122" text-anchor="middle">PRD_NM</text>
+  <text class="mono sm" x="670" y="140" text-anchor="middle">CAT_CD</text>
+  <text class="sm" x="670" y="168" text-anchor="middle">名字、类型、结构</text>
+  <text class="sm" x="670" y="184" text-anchor="middle">都可以不一样</text>
+</svg>
+<figcaption>图 5-1　建模对象是消费者和提供者之间<strong>交换</strong>的数据，而不是存储的数据</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 从业务角度建模，而不是从存储角度</div>
+  <p>
+    API 数据长得像数据库没什么不对，但那应该是「恰好一样」，而不是「照抄」。
+    别忘了第 2 章：不要不假思索地暴露提供者的数据结构。
+  </p>
+</div>
+
+<h2 id="json">JSON：可移植的数据格式</h2>
+
+<p>
+  HTTP 的请求体和响应体可以装任何格式。Web API 最常用的是 <strong>JSON</strong>（JavaScript Object Notation）：
+  人能读、浏览器能直接处理，而且与编程语言无关 —— Python、Java、TypeScript 都能轻松解析。
+</p>
+
+<div class="code" data-lang="json" data-file="一个商品的 JSON 表示">
+<pre>
+{
+  "productReference": 12345,              // 数字（整数）
+  "name": "Cowboy Bebop",                 // 字符串
+  "keywords": ["anime", "space"],         // 数组（可以装任何类型）
+  "price": 49.99,                         // 数字（浮点数）
+  "isProductUnavailable": false,          // 布尔值
+  "supplier": {                           // 对象
+    "supplierCode": "SUNR",
+    "name": "Sunrise"
+  },
+  "description": null                     // null：表示「没有值」
+}
+</pre>
+</div>
+
+<p>
+  JSON 只有这几种类型：<strong>字符串、数字、布尔值、数组、对象</strong>，外加 <code>null</code>。
+  即使将来用别的格式（XML、CSV……），也请<strong>以 JSON 的类型为准</strong>来建模，这样任何消费者都能理解。路径参数、查询参数和头字段通常对应其中的原子类型。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 注释只是为了讲解</div>
+  <p>标准 JSON 不支持注释。本教程的 JSON 示例里出现的 <code>//</code> 只是给你看的，真实数据里不能有。</p>
+</div>
+
+<h2 id="steps">数据建模的三步</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="数据建模三步：设计资源的理论模型、派生为操作的输入输出、检查完整性和聚焦">
+  <rect class="bx-a" x="20" y="30" width="226" height="140" rx="12"/>
+  <text class="ttl on-a" x="133" y="56" text-anchor="middle">① 设计资源的完整模型</text>
+  <text class="sm" x="133" y="80" text-anchor="middle">一个业务概念可能有的全部数据</text>
+  <text class="mono sm" x="48" y="108">productReference  integer</text>
+  <text class="mono sm" x="48" y="126">name              string</text>
+  <text class="mono sm" x="48" y="144">supplier          object</text>
+
+  <path class="ln-a" d="M246 100 H266" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-b" x="268" y="30" width="226" height="140" rx="12"/>
+  <text class="ttl on-b" x="381" y="56" text-anchor="middle">② 派生输入和输出</text>
+  <text class="sm" x="381" y="80" text-anchor="middle">按操作的上下文，取全部或子集</text>
+  <text class="sm" x="381" y="108" text-anchor="middle">创建时：去掉服务端生成的编号</text>
+  <text class="sm" x="381" y="126" text-anchor="middle">列表里：只留摘要</text>
+  <text class="sm" x="381" y="144" text-anchor="middle">路径参数：只要标识符</text>
+
+  <path class="ln-b" d="M494 100 H514" marker-end="url(#ar-b)"/>
+
+  <rect class="bx-g" x="516" y="30" width="226" height="140" rx="12"/>
+  <text class="ttl on-g" x="629" y="56" text-anchor="middle">③ 检查完整性与聚焦</text>
+  <text class="sm" x="629" y="80" text-anchor="middle">消费者拿得出这个输入吗？</text>
+  <text class="sm" x="629" y="108" text-anchor="middle">→ 发现遗漏的能力</text>
+  <text class="sm" x="629" y="126" text-anchor="middle">→ 补全业务错误</text>
+  <text class="sm" x="629" y="144" text-anchor="middle">→ 剔除不该暴露的数据</text>
+</svg>
+<figcaption>图 5-2　以资源模型为源头，保证了同一个概念在各处长得一致</figcaption>
+</figure>
+
+<h2 id="resource">设计资源的完整模型</h2>
+
+<p>
+  REST API 的一切都围绕资源。除了 HTTP 头里的元数据，所有输入输出都与资源数据有关：
+  请求体和响应体是资源的表示；路径参数通常是资源的 ID；查询参数（如筛选条件）也源自资源的属性。
+  所以第一件事是设计<strong>完整模型</strong>（也叫理论模型）：先不管具体操作，把这个业务概念可能有的数据全部列出来。
+</p>
+
+<h3>结构</h3>
+<p>
+  现阶段的简单约定：<strong>单个资源是对象，集合资源是数组</strong>。
+  「商品」→ <code>Product</code>（对象）；「目录」→ <code>Product</code> 的数组。
+  （第 9 章和第 15 章会说明为什么集合最好也包在一个对象里。）
+</p>
+
+<h3>商品的完整模型</h3>
+
+<p>与领域专家讨论「商品里有什么」之后：</p>
+
+<div class="tw">
+<table>
+  <tr><th>名称</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>productReference</code></td><td>integer</td><td>&#10033;</td><td>唯一标识符</td></tr>
+  <tr><td><code>name</code></td><td>string</td><td>&#10033;</td><td></td></tr>
+  <tr><td><code>description</code></td><td>string</td><td></td><td></td></tr>
+  <tr><td><code>keywords</code></td><td>array of string</td><td></td><td></td></tr>
+  <tr><td><code>category</code></td><td>string</td><td>&#10033;</td><td></td></tr>
+  <tr><td><code>price</code></td><td>float</td><td>&#10033;</td><td>以美元计价</td></tr>
+  <tr><td><code>dateAdded</code></td><td>string</td><td>&#10033;</td><td><code>YYYY-MM-DD</code> 格式</td></tr>
+  <tr><td><code>isProductUnavailable</code></td><td>boolean</td><td></td><td>（名字是临时的）</td></tr>
+  <tr><td><code>supplier</code></td><td>object</td><td>&#10033;</td><td>来自相关的「供应商」资源</td></tr>
+  <tr><td>　<code>supplier.supplierCode</code></td><td>string</td><td>&#10033;</td><td>唯一标识符，可用来读取完整的供应商</td></tr>
+  <tr><td>　<code>supplier.name</code></td><td>string</td><td>&#10033;</td><td>专家认为供应商名称对商品很重要</td></tr>
+</table>
+</div>
+
+<ul>
+  <li><strong>选属性：</strong>包含资源标识符和描述这个概念的数据。与其他资源有关系时，可以带上对方的部分数据（这里带了供应商的代码和名称）。信息来源是领域专家，也可以参考现有界面、代码或数据库 —— 但要小心被它们带偏。</li>
+  <li><strong>起名：</strong>先用讨论中冒出来的第一个有意义的名字，写成变量名的形式。<code>productReference</code> 还是 <code>product_reference</code> 随你，但整个 API（乃至所有 API）要<strong>统一</strong>。</li>
+  <li><strong>定类型：</strong>从 JSON 的可移植类型里选。JSON 没有日期类型，所以 <code>dateAdded</code> 是字符串，格式写在说明里。</li>
+  <li><strong>写说明：</strong>当「资源名 + 属性名 + 类型」还说不清时才需要，比如「以美元计价」。</li>
+  <li>
+    <strong>标必填：</strong>在完整模型里，必填表示「没有它这个概念就不成立」。商品不能没有编号、名称、价格，但可以没有描述。
+    嵌套对象里也要标：<code>supplier</code> 必填，不代表它里面的每个属性都必填。
+  </li>
+</ul>
+
+<div class="box tip">
+  <div class="t">&#128161; 高效建模：别同时操心所有事</div>
+  <p>现在不是争论 <code>isAvailable</code> 还是 <code>isProductAvailable</code> 的时候。重要的是识别出「商品需要一个表示是否可售的属性」。建议按这个顺序来：</p>
+  <ol>
+    <li>用最先想到的名字把元素全列出来，不管细节；</li>
+    <li>把属于同一个子概念的归到一起，形成子对象；</li>
+    <li>逐个定类型、把名字整理成变量名、判断是否必填；</li>
+    <li>对更深层的对象重复上面的步骤；</li>
+    <li>最后逐个审视，删掉没有意义的。</li>
+  </ol>
+</div>
+
+<h2 id="io">从完整模型派生输入和输出</h2>
+
+<div class="box tip">
+  <div class="t">&#128161; 先建输出，再建输入</div>
+  <p>大多数情况下，每个输入数据都与输出的某一部分相同。先把输出定下来，输入就水到渠成。</p>
+</div>
+
+<h3>读取：<code>GET /products/{productReference}</code></h3>
+<p>
+  输出就是完整的 <code>Product</code>。在输出的语境下，「必填」意味着「<strong>总是会返回</strong>」：<code>name</code> 每个商品都有，<code>description</code> 可能没有。
+  路径参数标识的正是 <code>Product</code> 的 <code>productReference</code>，所以类型取 integer，并且<strong>把路径参数也命名为 <code>{productReference}</code></strong>
+  —— 文档里同一个东西用同一个名字，消费者才容易把各处对上。
+</p>
+
+<h3>搜索：<code>GET /products</code></h3>
+<p>
+  可以返回 <code>Product</code> 的数组，但列表里通常不需要全部细节。这里返回 <code>ProductSummary</code> 的数组：
+  保留 <code>productReference</code>、<code>name</code>、<code>category</code>、<code>keywords</code>、<code>price</code>，去掉 <code>dateAdded</code> 等。
+  消费者想看更多，拿着编号去读单个商品即可。没找到时返回空数组 <code>[]</code>。
+</p>
+<p>
+  「筛选条件」拆成查询参数，<strong>筛选项应与返回的模型里的属性对应</strong>：<code>GET /products?keywords=anime,fantasy&amp;category=BD</code>。
+  想按「是否可售」筛选？那得先把这个属性加进返回的模型。想按「原产国」筛选？模型里没有这个属性，要先加上。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 列表里放多少数据</div>
+  <p>放得太少，消费者得为每个元素再调一次接口；放得太多，数据量又太大。这是个效率问题，第 13 章细讲。</p>
+</div>
+
+<h3>创建：<code>POST /products</code></h3>
+<p>
+  输出：被创建的商品，用 <code>Product</code>（如果出于性能考虑想少返回点，可以用只含 <code>productReference</code> 的 <code>ProductMinimal</code>）；
+  另有标准头 <code>Location</code>（string，形如 <code>/products/12345</code>）。
+</p>
+<p>
+  输入：虽然同样叫「商品信息」，但它<strong>和输出不一样</strong> —— 要去掉由服务端管理的数据：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 310" role="img" aria-label="从完整的商品模型中去掉服务端生成的属性得到创建模型">
+  <text class="ttl" x="20" y="22">Product（完整模型）</text>
+  <g>
+    <rect class="bx-r" x="20" y="34" width="300" height="26" rx="5"/><text class="mono" x="32" y="52">productReference</text><text class="sm on-r" x="308" y="52" text-anchor="end">服务端生成</text>
+    <rect class="bx-g" x="20" y="64" width="300" height="26" rx="5"/><text class="mono" x="32" y="82">name &#10033;</text>
+    <rect class="bx-g" x="20" y="94" width="300" height="26" rx="5"/><text class="mono" x="32" y="112">description</text>
+    <rect class="bx-g" x="20" y="124" width="300" height="26" rx="5"/><text class="mono" x="32" y="142">keywords</text>
+    <rect class="bx-g" x="20" y="154" width="300" height="26" rx="5"/><text class="mono" x="32" y="172">category &#10033;</text>
+    <rect class="bx-g" x="20" y="184" width="300" height="26" rx="5"/><text class="mono" x="32" y="202">price &#10033;</text>
+    <rect class="bx-r" x="20" y="214" width="300" height="26" rx="5"/><text class="mono" x="32" y="232">dateAdded</text><text class="sm on-r" x="308" y="232" text-anchor="end">服务端生成</text>
+    <rect class="bx-g" x="20" y="244" width="300" height="26" rx="5"/><text class="mono" x="32" y="262">supplier.supplierCode &#10033;</text>
+    <rect class="bx-r" x="20" y="274" width="300" height="26" rx="5"/><text class="mono" x="32" y="292">supplier.name</text><text class="sm on-r" x="308" y="292" text-anchor="end">服务端按代码查出</text>
+  </g>
+
+  <path class="ln-g" d="M320 168 H438" marker-end="url(#ar-g)"/>
+  <text class="sm" x="380" y="158" text-anchor="middle">只保留</text>
+  <text class="sm" x="380" y="186" text-anchor="middle">消费者提供的</text>
+
+  <text class="ttl" x="440" y="52">ProductCreation（创建模型）</text>
+  <rect class="bx-g" x="440" y="64" width="300" height="206" rx="10"/>
+  <text class="mono" x="456" y="88">{</text>
+  <text class="mono" x="456" y="108">  "name": "Cowboy Bebop",</text>
+  <text class="mono" x="456" y="128">  "description": "An amazing ...",</text>
+  <text class="mono" x="456" y="148">  "keywords": ["anime"],</text>
+  <text class="mono" x="456" y="168">  "category": "BD",</text>
+  <text class="mono" x="456" y="188">  "price": 49.99,</text>
+  <text class="mono" x="456" y="208">  "isProductUnavailable": false,</text>
+  <text class="mono" x="456" y="228">  "supplier": { "supplierCode": "SUNR" }</text>
+  <text class="mono" x="456" y="248">}</text>
+  <text class="sm" x="590" y="292" text-anchor="middle">此处的 &#10033; 表示「消费者必须提供」</text>
+</svg>
+<figcaption>图 5-3　创建模型 = 完整模型 − 服务端管理的数据。必填越多，操作越难用（第 9 章）</figcaption>
+</figure>
+
+<h3>更新：<code>PUT</code> / <code>PATCH /products/{productReference}</code></h3>
+
+<p>输出是商品的新状态：<code>Product</code>。路径参数同读取。输入因方法而异：</p>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">PUT：发送整个资源（替换）</div>
+    <div class="code" data-lang="http"><pre>
+PUT /products/12345
+
+{
+  "name": "Cowboy Bebop",
+  "description": "A fantastic ...",
+  "keywords": ["anime"],
+  "category": "BD",
+  "price": 59.99,
+  "isProductUnavailable": false,
+  "supplier": { "supplierCode": "SUNR" }
+}
+</pre></div>
+  </div>
+  <div class="new">
+    <div class="h">PATCH：只发送改动的部分</div>
+    <div class="code" data-lang="http"><pre>
+PATCH /products/12345
+
+{
+  "description": "A fantastic ...",
+  "price": 59.99
+}
+</pre></div>
+  </div>
+</div>
+
+<ul>
+  <li><code>PUT</code> 的输入是「重新创建这个资源」所需的一切 → 与创建模型相同，可以合并成一个 <code>ProductCreationOrReplacement</code>。</li>
+  <li><code>PATCH</code> 的输入 <code>ProductModification</code> → 创建模型的副本，但<strong>所有属性都变成可选</strong>。（这种做法叫 JSON Merge Patch，RFC 7396，是最常见的方案。）</li>
+  <li>如果某些属性创建后不允许修改（比如商品的供应商），替换和修改模型就是创建模型的子集。</li>
+</ul>
+
+<h3>删除与错误</h3>
+<p>
+  <code>DELETE /products/{productReference}</code>：路径参数同上，无输出。
+  错误输出先用一个临时的简单模型 <code>Error</code>：一个对象，带必填的字符串 <code>message</code>，例如 <code>{"message": "The product type is missing"}</code>。第 9 章会把它做得更好。
+</p>
+
+<h2 id="seven">七种典型模型</h2>
+
+<p>回顾刚才做的事，可以提炼出七种反复出现的模型。以后遇到 CRUD 操作，直接套用：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 350" role="img" aria-label="从完整模型派生出摘要、最小、标识符、创建、替换、修改六种模型">
+  <rect class="bx-a" x="290" y="20" width="180" height="150" rx="12"/>
+  <text class="ttl on-a" x="380" y="44" text-anchor="middle">完整 Complete</text>
+  <rect class="bx" x="306" y="56" width="148" height="22" rx="4"/><text class="sm" x="380" y="72" text-anchor="middle">资源 ID</text>
+  <rect class="bx" x="306" y="82" width="148" height="22" rx="4"/><text class="sm" x="380" y="98" text-anchor="middle">主要属性</text>
+  <rect class="bx" x="306" y="108" width="148" height="22" rx="4"/><text class="sm" x="380" y="124" text-anchor="middle">次要属性</text>
+  <rect class="bx" x="306" y="134" width="148" height="22" rx="4"/><text class="sm" x="380" y="150" text-anchor="middle">服务端管理的属性</text>
+
+  <text class="lbl on-b" x="130" y="16" text-anchor="middle">输出方向</text>
+  <rect class="bx-b" x="20" y="28" width="220" height="52" rx="10"/>
+  <text class="ttl on-b" x="130" y="50" text-anchor="middle">摘要 Summarized</text>
+  <text class="sm" x="130" y="68" text-anchor="middle">ID + 构成有意义摘要的主要属性</text>
+  <rect class="bx-b" x="20" y="90" width="220" height="52" rx="10"/>
+  <text class="ttl on-b" x="130" y="112" text-anchor="middle">最小 Minimal</text>
+  <text class="sm" x="130" y="130" text-anchor="middle">只含 ID 属性的对象</text>
+  <rect class="bx-b" x="20" y="152" width="220" height="52" rx="10"/>
+  <text class="ttl on-b" x="130" y="174" text-anchor="middle">标识符 Identifier</text>
+  <text class="sm" x="130" y="192" text-anchor="middle">ID 的值本身（一个原子类型）</text>
+  <path class="ln-b" d="M290 70 C266 70 264 54 242 54" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M290 96 C266 96 264 116 242 116" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M290 122 C266 122 264 178 242 178" marker-end="url(#ar-b)"/>
+
+  <text class="lbl on-g" x="630" y="16" text-anchor="middle">输入方向</text>
+  <rect class="bx-g" x="520" y="28" width="220" height="52" rx="10"/>
+  <text class="ttl on-g" x="630" y="50" text-anchor="middle">创建 Creation</text>
+  <text class="sm" x="630" y="68" text-anchor="middle">去掉服务端管理的属性</text>
+  <rect class="bx-g" x="520" y="90" width="220" height="52" rx="10"/>
+  <text class="ttl on-g" x="630" y="112" text-anchor="middle">替换 Replacement</text>
+  <text class="sm" x="630" y="130" text-anchor="middle">通常与创建模型相同</text>
+  <rect class="bx-g" x="520" y="152" width="220" height="52" rx="10"/>
+  <text class="ttl on-g" x="630" y="174" text-anchor="middle">修改 Modification</text>
+  <text class="sm" x="630" y="192" text-anchor="middle">创建模型，但全部可选</text>
+  <path class="ln-g" d="M470 70 C494 70 496 54 518 54" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M470 96 C494 96 496 116 518 116" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M470 122 C494 122 496 178 518 178" marker-end="url(#ar-g)"/>
+
+  <!-- usage table -->
+  <rect class="bx" x="20" y="226" width="720" height="110" rx="10"/>
+  <text class="mono sm" x="36" y="248">POST   /resources</text><text class="sm" x="270" y="248">请求体：<tspan class="on-g" font-weight="700">创建</tspan></text><text class="sm" x="470" y="248">响应体：<tspan class="on-a" font-weight="700">完整</tspan> 或 <tspan class="on-b" font-weight="700">最小</tspan></text>
+  <text class="mono sm" x="36" y="266">GET    /resources</text><text class="sm" x="270" y="266">查询参数：拆解自返回的模型</text><text class="sm" x="470" y="266">响应体：<tspan class="on-a" font-weight="700">完整</tspan> 或 <tspan class="on-b" font-weight="700">摘要</tspan> 的列表</text>
+  <text class="mono sm" x="36" y="284">GET    /resources/{id}</text><text class="sm" x="270" y="284">路径：<tspan class="on-b" font-weight="700">标识符</tspan></text><text class="sm" x="470" y="284">响应体：<tspan class="on-a" font-weight="700">完整</tspan></text>
+  <text class="mono sm" x="36" y="302">PUT    /resources/{id}</text><text class="sm" x="270" y="302">请求体：<tspan class="on-g" font-weight="700">替换</tspan>（或创建）</text><text class="sm" x="470" y="302">响应体：<tspan class="on-a" font-weight="700">完整</tspan></text>
+  <text class="mono sm" x="36" y="320">PATCH  /resources/{id}</text><text class="sm" x="270" y="320">请求体：<tspan class="on-g" font-weight="700">修改</tspan></text><text class="sm" x="470" y="320">响应体：<tspan class="on-a" font-weight="700">完整</tspan></text>
+</svg>
+<figcaption>图 5-4　七种典型模型及其用法。摘要和最小模型还可以嵌进别的资源里（比如订单里的商品列表）</figcaption>
+</figure>
+
+<h3>在代码里表达这些模型</h3>
+
+<p>
+  这七种模型在实现时就是一组彼此派生的类型。三种语言各有惯用写法：Python 用 Pydantic 的继承，TypeScript 用 Zod 的 <code>pick</code> / <code>omit</code> / <code>partial</code>，
+  Java 没有内建的派生语法，通常用 record 组合。
+</p>
+
+<div class="tabs" data-title="从完整模型派生其余模型">
+<div class="code" data-lang="python" data-file="Pydantic">
+<pre>
+from datetime import date
+from pydantic import BaseModel
+
+class SupplierRef(BaseModel):                 # 创建时只需要供应商代码
+    supplierCode: str
+
+class Supplier(SupplierRef):                  # 输出时带上服务端查出的名称
+    name: str
+
+# ---- 创建模型：只有消费者提供的数据 ----
+class ProductCreation(BaseModel):
+    name: str
+    description: str | None = None            # 可选
+    keywords: list[str] = []
+    category: str
+    price: float
+    isProductUnavailable: bool = False
+    supplier: SupplierRef
+
+ProductReplacement = ProductCreation          # 替换模型 = 创建模型
+
+# ---- 修改模型：同样的属性，全部可选 ----
+class ProductModification(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    keywords: list[str] | None = None
+    category: str | None = None
+    price: float | None = None
+    isProductUnavailable: bool | None = None
+
+# ---- 最小模型：只有标识符 ----
+class ProductMinimal(BaseModel):
+    productReference: int                     # 它的类型 int 就是「标识符模型」
+
+# ---- 摘要模型：标识符 + 主要属性 ----
+class ProductSummary(ProductMinimal):
+    name: str
+    category: str
+    keywords: list[str] = []
+    price: float
+
+# ---- 完整模型：摘要 + 其余属性 + 服务端管理的属性 ----
+class Product(ProductSummary):
+    description: str | None = None
+    dateAdded: date
+    isProductUnavailable: bool = False
+    supplier: Supplier
+
+
+class Error(BaseModel):                       # 临时的错误模型
+    message: str
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Zod">
+<pre>
+import { z } from "zod";
+
+// ---- 完整模型：先设计它，其余都从它派生 ----
+export const Product = z.object({
+  productReference: z.number().int(),          // 服务端生成；它的类型就是「标识符模型」
+  name: z.string(),
+  description: z.string().optional(),          // 可选
+  keywords: z.array(z.string()).default([]),
+  category: z.string(),
+  price: z.number(),
+  dateAdded: z.string().date(),                // 服务端生成，YYYY-MM-DD
+  isProductUnavailable: z.boolean().default(false),
+  supplier: z.object({
+    supplierCode: z.string(),
+    name: z.string(),                          // 服务端按代码查出
+  }),
+});
+
+// ---- 摘要模型：标识符 + 主要属性 ----
+export const ProductSummary = Product.pick({
+  productReference: true, name: true, category: true, keywords: true, price: true,
+});
+
+// ---- 最小模型：只有标识符 ----
+export const ProductMinimal = Product.pick({ productReference: true });
+
+// ---- 创建模型：去掉服务端管理的数据 ----
+export const ProductCreation = Product
+  .omit({ productReference: true, dateAdded: true })
+  .extend({ supplier: Product.shape.supplier.pick({ supplierCode: true }) });
+
+export const ProductReplacement = ProductCreation;       // 替换模型 = 创建模型
+
+// ---- 修改模型：同样的属性，全部可选；且供应商创建后不可改 ----
+export const ProductModification = ProductCreation.omit({ supplier: true }).partial();
+
+export const ErrorModel = z.object({ message: z.string() });   // 临时的错误模型
+
+export type Product = z.infer&lt;typeof Product&gt;;
+export type ProductSummary = z.infer&lt;typeof ProductSummary&gt;;
+export type ProductCreation = z.infer&lt;typeof ProductCreation&gt;;
+export type ProductModification = z.infer&lt;typeof ProductModification&gt;;
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Java records">
+<pre>
+import jakarta.validation.constraints.*;
+import java.time.LocalDate;
+import java.util.List;
+
+// ---- 完整模型：读取、创建、更新的输出 ----
+public record Product(
+    int productReference,            // 服务端生成；它的类型 int 就是「标识符模型」
+    String name,
+    String description,              // 可空 = 可选
+    List&lt;String&gt; keywords,
+    String category,
+    double price,
+    LocalDate dateAdded,             // 服务端生成
+    boolean isProductUnavailable,
+    Supplier supplier
+) {
+    public record Supplier(String supplierCode, String name) {}   // name 由服务端按代码查出
+}
+
+// ---- 摘要模型：标识符 + 主要属性，用于列表 ----
+record ProductSummary(int productReference, String name, String category,
+                      List&lt;String&gt; keywords, double price) {
+    static ProductSummary of(Product p) {
+        return new ProductSummary(p.productReference(), p.name(), p.category(), p.keywords(), p.price());
+    }
+}
+
+// ---- 最小模型：只有标识符 ----
+record ProductMinimal(int productReference) {}
+
+// ---- 创建 / 替换模型：只有消费者提供的数据；注解表达「必须提供」 ----
+record ProductCreationOrReplacement(
+    @NotBlank String name,
+    String description,
+    List&lt;String&gt; keywords,
+    @NotBlank String category,
+    @NotNull @Positive Double price,
+    Boolean isProductUnavailable,
+    @NotNull SupplierRef supplier
+) {
+    record SupplierRef(@NotBlank String supplierCode) {}
+}
+
+// ---- 修改模型：同样的属性，全部可选（用包装类型，null 表示「不改」）----
+record ProductModification(
+    String name, String description, List&lt;String&gt; keywords,
+    String category, Double price, Boolean isProductUnavailable
+) {}
+
+record Error(String message) {}      // 临时的错误模型
+</pre>
+</div>
+</div>
+
+<h3>「做某事」操作的数据</h3>
+
+<ul>
+  <li><strong>名词化或结果资源</strong>（<code>POST /executions</code>、<code>POST /results</code>）：按普通的创建操作处理。「执行」资源的完整模型包含动作的全部输入和输出，再加一个标识符；输入是其创建模型。</li>
+  <li><strong>动作资源</strong>（<code>POST /sum</code>）：像函数一样，请求体放输入，响应体放结果。建议让输出同时<strong>带上输入</strong>（像不带 ID 的「执行」资源），这样消费者能看出结果是怎么来的。</li>
+</ul>
+
+<h3>名字相同，未必是同一个东西</h3>
+
+<p>
+  「商品信息」作为创建的输入和输出，模型就不同。更隐蔽的是跨场景的同名概念：
+  目录里的「商品」和购物车里的「商品」并不是一回事 —— 往购物车加东西只需要 <code>productReference</code> 和 <code>quantity</code>。
+  应把它们区分为<strong>「目录商品（Catalog Product）」</strong>和<strong>「购物车条目（Cart Item）」</strong>并分别建模；
+  需要时再组合，比如 <code>CartItemSummary</code> 里嵌一个 <code>CatalogProductSummary</code>。
+</p>
+
+<div class="box key">
+  <div class="t">&#9733; 记住</div>
+  <p>看似唯一的业务概念，往往是在不同场景下的好几个概念。拿不准时一定要问领域专家；如果把模型细化之后出现了彼此不相干的数据，那就是没区分开的信号。</p>
+</div>
+
+<h2 id="check">用数据检查完整性与聚焦</h2>
+
+<h3>1. 输入从哪来、输出给谁用（第二次）</h3>
+
+<p>
+  第 2 章在步骤层面问过这两个问题，现在在<strong>字段层面</strong>再问一遍，会有新发现。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="创建商品需要 category 字段，消费者无法凭空给出，由此发现遗漏的选择分类步骤">
+  <rect class="bx" x="20" y="30" width="230" height="110" rx="10"/>
+  <text class="ttl" x="135" y="54" text-anchor="middle">POST /products 的请求体</text>
+  <text class="mono sm" x="38" y="80">"name": "…"</text>
+  <text class="mono sm on-r" x="38" y="100" font-weight="700">"category": "?"</text>
+  <text class="mono sm" x="38" y="120">"price": …</text>
+
+  <path class="ln-r" d="M250 96 H330" marker-end="url(#ar-r)"/>
+  <rect class="bx-r" x="332" y="62" width="180" height="68" rx="10"/>
+  <text class="ttl on-r" x="422" y="86" text-anchor="middle">这个值从哪来？</text>
+  <text class="sm" x="422" y="106" text-anchor="middle">消费者不能凭空编一个分类</text>
+  <text class="sm" x="422" y="122" text-anchor="middle">其他操作也没返回过它</text>
+
+  <path class="ln-g" d="M512 96 H548" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="550" y="46" width="190" height="100" rx="10"/>
+  <text class="ttl on-g" x="645" y="70" text-anchor="middle">＋ 遗漏的步骤</text>
+  <text class="sm" x="645" y="92" text-anchor="middle">「选择一个分类」</text>
+  <text class="sm" x="645" y="112" text-anchor="middle">加入「填充目录」和</text>
+  <text class="sm" x="645" y="130" text-anchor="middle">「搜索要买的商品」用例</text>
+</svg>
+<figcaption>图 5-5　细粒度的输入来源检查能揭示需求分析时没看到的 API 部分。没有这一步，目录里一件商品都加不进去</figcaption>
+</figure>
+
+<p>
+  输出也再过一遍：最终用户会拿商品里的「供应商信息」做什么？也许可以把它做成搜索的筛选项；也可能它对最终用户根本无关 —— 那就去掉。
+  但目录管理员需要它，这可能意味着最终用户和管理员的操作需要分开（第 12 章）。
+</p>
+
+<h3>2. 补全业务错误</h3>
+<p>
+  有了细粒度的输入，和领域专家再核对一遍可能的业务错误，尤其是创建和修改操作。
+  它们大多是已有错误的细化：「商品价格不能为负数，也不能超过 100,000」细化了「商品信息有误」，可以写进 <code>400</code> 的说明里。
+</p>
+
+<h3>3. 聚焦在正确的元素上</h3>
+
+<div class="tw">
+<table>
+  <tr><th>检查项</th><th>例子</th></tr>
+  <tr><td><strong>满足消费者需求</strong>：他们要的数据给全了吗？</td><td>商品缺了「尺寸」，而这对消费者很关键 → 补上</td></tr>
+  <tr><td><strong>通用</strong>：换个场景还适用吗？</td><td>第一个 App 的线框图里没显示「描述」，但从业务上看它是商品的基本信息 → 保留，迟早有人要用</td></tr>
+  <tr><td><strong>不暴露提供者视角</strong></td><td>价格的说明写着「周五下午 4 点到 7 点要加 10%」→ 这是内部业务逻辑，别让消费者自己算</td></tr>
+  <tr><td><strong>不过度贴合某个消费者</strong></td><td>因为现有网站把描述和关键词放在同一块区域，就把它们包进一个 <code>summary</code> 对象 → 从纯数据的角度看这毫无道理</td></tr>
+</table>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 这只是初稿</div>
+  <p>
+    当前只关心「做对的事、足够通用」。得到的数据可能还不够好用、不够高效、不够安全，这对老手也是正常的 ——
+    后面几层会逐一修正：好用性（第 8 章）、安全（第 12 章）、性能（第 13 章）、实现约束（第 14 章）。
+  </p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>用 JSON 的可移植类型（字符串、数字、布尔、数组、对象）为所有数据建模，以保证兼容。</li>
+  <li>先为资源（业务概念）设计模型，再派生出每个操作的输入和输出。</li>
+  <li>建模时先列属性不管细节，再重组和筛选，最后定名字、类型和是否必填。</li>
+  <li>七种典型模型：完整、摘要、最小、标识符、创建、替换、修改。</li>
+  <li>完整模型包含全部属性和标识符，先设计它；用于创建、读取、搜索、更新的输出。</li>
+  <li>摘要模型用于搜索列表；最小模型用于创建的输出；标识符模型用于路径参数。</li>
+  <li>创建模型去掉服务端管理的数据；替换模型通常与它相同（<code>PUT</code>）；修改模型是它的全可选版本（<code>PATCH</code>）。</li>
+  <li>检查数据的来源和用途以发现遗漏的用例或步骤；借助输入数据找全业务错误。</li>
+  <li>确保数据通用、贴合消费者需求，不受提供者或某个特定消费者的影响。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      电影流媒体 API。「读取电影」返回 <code>{"id":"ZFqoFq","title":"Ghost In The Shell","releaseYear":"1995","duration":"83","director":"Mamoru Oshii","music":"Kenji Kawai","language":"ja"}</code>；
+      「搜索电影」返回 <code>[{"title":"Ghost In The Shell","language":"ja","stars":5,"music":"Kenji Kawai"}]</code>。指出问题。
+      <details class="ans"><summary>参考答案</summary>
+        ① 类型不对：<code>releaseYear</code> 和 <code>duration</code> 应是数字而不是字符串。
+        ② 摘要里<strong>缺少标识符 <code>id</code></strong>，消费者没法接着去读某一部电影。
+        ③ 摘要里的 <code>stars</code> 在完整模型里不存在 —— 摘要应是完整模型的子集，要么把 <code>stars</code> 加进完整模型，要么去掉。
+        ④ <code>music</code> 对列表来说多半不是「主要属性」，而 <code>releaseYear</code>、<code>director</code> 可能更合适。
+      </details>
+    </li>
+    <li>
+      菜谱平台的 <code>POST /recipes</code> 请求体里包含 <code>id</code>、<code>title</code>、<code>description</code>、<code>creationDate</code>、<code>ingredients</code>（每项有 <code>id</code> 和 <code>quantity</code>）、<code>instructions</code>。有什么问题？
+      <details class="ans"><summary>参考答案</summary>
+        <code>id</code> 和 <code>creationDate</code> 应由服务端生成，不该出现在创建模型里。
+        另外每种食材的 <code>id</code>（如 <code>shortcrust_pastry</code>）从哪来？消费者无法凭空给出，说明缺少一个「搜索/列出食材」的操作。
+        <code>quantity</code> 把数值和单位混在一个字符串里（<code>"200g"</code>）也不便于使用。
+      </details>
+    </li>
+    <li>
+      智能手表上的健身 App 只展示一次训练的<em>时长</em>和<em>类型</em>。<code>GET /workouts/{workoutId}</code> 返回 <code>id</code>、<code>type</code>、<code>duration</code>、<code>distance</code>、<code>date</code>、<code>lastDbSync</code>。哪些该保留？
+      <details class="ans"><summary>参考答案</summary>
+        <code>id</code>、<code>type</code>、<code>duration</code> 保留。<code>distance</code> 和 <code>date</code> 也保留：虽然这个 App 现在不用，但它们是「训练」这个概念的基本信息，别的消费者会需要（通用性）。
+        <code>lastDbSync</code> 删除：它暴露的是提供者的内部运作。
+      </details>
+    </li>
+    <li>
+      租车 API 的 <code>GET /cars/{carId}</code> 同时服务「顾客租车」和「技师检修」，返回的数据里既有日租金、可载人数，也有车架号、轮胎状况、上次检修日期。合适吗？
+      <details class="ans"><summary>参考答案</summary>
+        不合适。这是「名字相同但概念不同」：顾客眼里的「可租车辆」和技师眼里的「待维护车辆」是两个概念，而且把车架号、检修记录给顾客还有安全问题。
+        应拆成两个资源/模型（例如 <code>/rental-cars/{carId}</code> 和 <code>/fleet-vehicles/{carId}</code>，或同一路径按权限返回不同模型），各自只含本场景相关的数据。
+      </details>
+    </li>
+    <li>把本章的模型代码挑一种语言抄下来，为「购物车条目（Cart Item）」设计完整、摘要和创建三个模型。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

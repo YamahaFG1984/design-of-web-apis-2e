@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Web API 设计教程 · 从需求到 OpenAPI</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="0">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<div class="hero">
+  <span class="chapter-eyebrow">面向初学者的 19 章教程</span>
+  <h1>Web API 设计：从需求到 OpenAPI</h1>
+  <p class="sub">
+    这套教程整理自 Arnaud Lauret 的《The Design of Web APIs》（第 2 版，Manning）。
+    它讲的不是「怎么写代码实现一个 API」，而是在写代码<strong>之前</strong>的那件事：
+    消费者看到的接口应该长什么样，才能做对的事、好用、安全、高效，并且经得起修改。
+  </p>
+  <p style="margin-top:14px">
+    <span class="pill">REST</span><span class="pill">HTTP</span><span class="pill">OpenAPI 3.1</span>
+    <span class="pill">JSON Schema</span><span class="pill">Spectral</span>
+    <span class="pill">Python · FastAPI</span><span class="pill">TypeScript · Hono</span><span class="pill">Java · Spring Boot</span>
+  </p>
+</div>
+
+<h2 id="why">为什么要学「设计」</h2>
+
+<p>
+  你一定用过让人抓狂的 API：字段名像密码、同一个概念在两个接口里叫两个名字、报错只有一句 <code>Bad Request</code>、升级之后程序莫名其妙崩溃。
+  这些问题很少是实现写得差造成的，根源几乎都在<strong>接口的设计</strong>上。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="同一个需求的两种接口设计：暴露内部细节的糟糕设计，和从用户需求出发的好设计">
+  <rect class="bx-r" x="20" y="20" width="350" height="200" rx="12"/>
+  <text class="ttl on-r" x="195" y="46" text-anchor="middle">糟糕的设计</text>
+  <rect class="bx" x="40" y="60" width="310" height="34" rx="6"/>
+  <text class="mono sm" x="52" y="82"><tspan class="on-r" font-weight="700">GET</tspan> /deleteProduct/123</text>
+  <rect class="bx" x="40" y="100" width="310" height="52" rx="6"/>
+  <text class="mono sm" x="52" y="120"><tspan class="on-r" font-weight="700">200 OK</tspan></text>
+  <text class="mono sm" x="52" y="138">{"sts": 7, "err": "KO", "dt": 409228260}</text>
+  <text class="sm" x="195" y="176" text-anchor="middle">用「读取」方法删除 · 用「成功」状态报错</text>
+  <text class="sm" x="195" y="194" text-anchor="middle">字段看不懂 · 代码没含义 · 时间读不出来</text>
+
+  <rect class="bx-g" x="390" y="20" width="350" height="200" rx="12"/>
+  <text class="ttl on-g" x="565" y="46" text-anchor="middle">好的设计</text>
+  <rect class="bx" x="410" y="60" width="310" height="34" rx="6"/>
+  <text class="mono sm" x="422" y="82"><tspan class="on-g" font-weight="700">DELETE</tspan> /products/123</text>
+  <rect class="bx" x="410" y="100" width="310" height="52" rx="6"/>
+  <text class="mono sm" x="422" y="120"><tspan class="on-g" font-weight="700">404 Not Found</tspan></text>
+  <text class="mono sm" x="422" y="138">{ "detail": "Product 123 doesn't exist" }</text>
+  <text class="sm" x="565" y="176" text-anchor="middle">方法、路径、状态码各司其职</text>
+  <text class="sm" x="565" y="194" text-anchor="middle">不看文档也猜得到；任何 HTTP 工具都看得懂</text>
+</svg>
+<figcaption>图 0-1　两个 API 背后可以是同一套实现，区别只在「接口」的设计</figcaption>
+</figure>
+
+<h2 id="map">教程地图</h2>
+
+<p>
+  整套教程按<strong>四个步骤</strong>（先做什么、后做什么）和<strong>四个层次</strong>（每次只关注一类问题）展开。
+  先用最朴素的方式做出一个「做对了事」的设计，再一层一层地把它打磨好。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 400" role="img" aria-label="教程地图：四个设计步骤和四个设计层次，以及对应的章节">
+  <text class="ttl" x="20" y="22">四个步骤</text>
+
+  <rect class="bx" x="20" y="36" width="96" height="76" rx="10"/>
+  <text class="ttl" x="68" y="64" text-anchor="middle">模糊的</text>
+  <text class="ttl" x="68" y="82" text-anchor="middle">需求</text>
+  <text class="sm" x="68" y="100" text-anchor="middle">「在线购物」</text>
+
+  <rect class="bx-a" x="140" y="36" width="134" height="76" rx="10"/>
+  <text class="ttl on-a" x="207" y="58" text-anchor="middle">① 识别能力</text>
+  <text class="sm" x="207" y="78" text-anchor="middle">自然语言</text>
+  <text class="mono sm" x="207" y="96" text-anchor="middle">「搜索商品」</text>
+
+  <rect class="bx-a" x="294" y="36" width="134" height="76" rx="10"/>
+  <text class="ttl on-a" x="361" y="58" text-anchor="middle">② 设计接口</text>
+  <text class="sm" x="361" y="78" text-anchor="middle">HTTP</text>
+  <text class="mono sm" x="361" y="96" text-anchor="middle">GET /products</text>
+
+  <rect class="bx-a" x="448" y="36" width="134" height="76" rx="10"/>
+  <text class="ttl on-a" x="515" y="58" text-anchor="middle">③ 描述接口</text>
+  <text class="sm" x="515" y="78" text-anchor="middle">标准格式</text>
+  <text class="mono sm" x="515" y="96" text-anchor="middle">openapi.yaml</text>
+
+  <rect class="bx-a" x="602" y="36" width="138" height="76" rx="10"/>
+  <text class="ttl on-a" x="671" y="58" text-anchor="middle">④ 丰富产物</text>
+  <text class="sm" x="671" y="78" text-anchor="middle">示例、Mock、测试</text>
+  <text class="sm" x="671" y="96" text-anchor="middle">→ 设计参考套件</text>
+
+  <path class="ln" d="M116 74 H138" marker-end="url(#ar)"/>
+  <path class="ln-a" d="M274 74 H292" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M428 74 H446" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M582 74 H600" marker-end="url(#ar-a)"/>
+
+  <text class="sm" x="207" y="130" text-anchor="middle">第 2 章</text>
+  <text class="sm" x="361" y="130" text-anchor="middle">第 3–5 章</text>
+  <text class="sm" x="515" y="130" text-anchor="middle">第 6–7 章</text>
+  <text class="sm" x="671" y="130" text-anchor="middle">第 19 章</text>
+
+  <text class="ttl" x="20" y="172">四个层次</text>
+
+  <rect class="bx-g" x="20" y="186" width="720" height="44" rx="10"/>
+  <text class="ttl on-g" x="36" y="213">第 1 层　做对的事、足够通用</text>
+  <text class="sm" x="724" y="213" text-anchor="end">满足需求 · 隐藏内部 · 不绑定某个客户端　　第一部分（第 2–7 章）</text>
+
+  <rect class="bx-b" x="44" y="238" width="696" height="44" rx="10"/>
+  <text class="ttl on-b" x="60" y="265">第 2 层　好用、可互操作</text>
+  <text class="sm" x="724" y="265" text-anchor="end">数据 → 操作 → 操作流 → 整个 API　　第二部分（第 8–11 章）</text>
+
+  <rect class="bx-p" x="68" y="290" width="672" height="44" rx="10"/>
+  <text class="ttl on-p" x="84" y="317">第 3 层　纳入约束</text>
+  <text class="sm" x="724" y="317" text-anchor="end">安全 · 效率 · 上下文 · 修改与版本　　第三部分（第 12–15 章）</text>
+
+  <rect class="bx" x="92" y="342" width="648" height="44" rx="10"/>
+  <text class="ttl" x="108" y="369">第 4 层　可持续的设计流程</text>
+  <text class="sm" x="724" y="369" text-anchor="end">决策与指南 · 优化 OpenAPI · 自动检查　　第四部分（第 16–19 章）</text>
+</svg>
+<figcaption>图 0-2　每一章都落在某个步骤和某个层次的交叉点上</figcaption>
+</figure>
+
+<h2 id="examples">贯穿全书的例子</h2>
+
+<div class="cards">
+  <div class="card">
+    <span class="ic">&#128722;</span><h4>在线购物 API</h4>
+    <p>第 2–7 章。从一张写着「在线购物」的便利贴开始，一路做到完整的 OpenAPI 文档。</p>
+  </div>
+  <div class="card">
+    <span class="ic">&#127974;</span><h4>银行 API</h4>
+    <p>第 8–19 章。账户、交易、转账、开户申请 —— 足够复杂，能把好用性、安全、效率、演进都讲透。</p>
+  </div>
+  <div class="card">
+    <span class="ic">&#128172;</span><h4>SOCNET 社交网络</h4>
+    <p>第 1 章。用来说明什么是 Web API，以及糟糕的设计会伤害谁。</p>
+  </div>
+</div>
+
+<h2 id="code">关于代码示例</h2>
+
+<p>
+  原书专注于设计，没有一行实现代码。为了让你把设计决定和日常编码对上号，这套教程在每一章都补充了示例代码，
+  并且<strong>同时提供 Python、TypeScript 和 Java 三个版本</strong>。点击代码块上方的标签切换语言，你的选择会被记住并应用到所有章节。
+</p>
+
+<div class="tabs" data-title="试试切换语言">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+from fastapi import FastAPI, HTTPException
+
+app = FastAPI()
+
+@app.get("/products/{product_id}")
+def get_product(product_id: str):
+    product = catalog.find(product_id)
+    if product is None:
+        raise HTTPException(404, f"Product {product_id} doesn't exist")
+    return product
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+import { Hono } from "hono";
+
+const app = new Hono();
+
+app.get("/products/:productId", (c) =&gt; {
+  const productId = c.req.param("productId");
+  const product = catalog.find(productId);
+  if (!product) {
+    return c.json({ detail: `Product ${productId} doesn't exist` }, 404);
+  }
+  return c.json(product);
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+@RestController
+public class ProductController {
+
+    @GetMapping("/products/{productId}")
+    public Product getProduct(@PathVariable String productId) {
+        return catalog.find(productId).orElseThrow(() -&gt;
+            new ResponseStatusException(HttpStatus.NOT_FOUND,
+                "Product " + productId + " doesn't exist"));
+    }
+}
+</pre>
+</div>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th>语言</th><th>服务端</th><th>客户端</th><th>数据模型与校验</th></tr>
+  <tr><td>Python</td><td>FastAPI</td><td>httpx / requests</td><td>Pydantic</td></tr>
+  <tr><td>TypeScript</td><td>Hono</td><td>fetch</td><td>Zod</td></tr>
+  <tr><td>Java</td><td>Spring Boot</td><td>RestClient / java.net.http</td><td>record + Bean Validation</td></tr>
+</table>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 代码是为了说明设计</div>
+  <p>
+    示例代码聚焦于「设计如何体现在代码里」，省略了导入语句、数据访问层等与主题无关的部分（<code>catalog</code>、<code>store</code>、<code>accounts</code> 这类名字代表你自己的数据层），不一定能原样运行。
+    OpenAPI、JSON Schema 和 Spectral 的示例则与本仓库各章目录下的清单文件相对应，可以直接贴进编辑器或在本地运行。
+  </p>
+</div>
+
+<h2 id="how">怎么用这套教程</h2>
+
+<ul>
+  <li><strong>按顺序读。</strong>后面的章节建立在前面的概念和例子之上。第 1 章是全局地图，第 2–7 章是地基，不要跳过。</li>
+  <li><strong>先看图。</strong>每一章都有大量示意图，很多概念看图比读文字快。页面右下角的按钮可以切换深色/浅色。</li>
+  <li><strong>做练习。</strong>每章末尾有「动手练习」，点开「参考答案」之前先自己想一想。原书练习的 OpenAPI 文件在仓库的各章目录和 <code>Appendix - Solutions to Exercises</code> 里。</li>
+  <li><strong>边学边用。</strong>挑一个你正在用或正在做的 API，每学一章就拿它对照一遍。</li>
+</ul>
+
+<h2 id="toc">全部章节</h2>
+<div id="toc-grid"></div>
+
+<div class="box tip" style="margin-top:32px">
+  <div class="t">&#128161; 一句话总结</div>
+  <p>
+    如果只记住一件事：<strong>API 是给别人用的接口。先弄清他们要做什么，再从他们的角度去设计它的样子 ——
+    而不是把你的数据库、你的业务规则、你的系统架构原样端出去。</strong>
+    这套教程剩下的全部内容，都是这句话在不同层面上的展开。
+  </p>
+</div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

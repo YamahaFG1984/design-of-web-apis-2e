@@ -1,0 +1,985 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 7 章 · 用 JSON Schema 描述数据 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="7">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 7 章</span>
+<h1>用 JSON Schema 描述数据</h1>
+<p class="lede">
+  上一章的 OpenAPI 文档里留下了一堆空的 <code>schema: {}</code>。现在把它们填上。
+  OpenAPI 描述数据用的是另一个独立的标准 —— <strong>JSON Schema</strong>。
+  学会它，第 5 章设计的那些模型（完整、摘要、创建……）就都能写进文档了。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>知道 JSON Schema 是什么，以及它和 OpenAPI 的关系</li>
+    <li>会把资源模型定义为 <code>components.schemas</code> 下的可复用 schema</li>
+    <li>会描述对象、原子属性、嵌套对象、数组，以及必填属性</li>
+    <li>会用内联 schema 描述参数和响应头，并控制数组参数的序列化方式</li>
+    <li>会用 <code>$ref</code> 引用可复用 schema，以及混用内联和引用</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="what">JSON Schema 是什么</h2>
+
+<p>
+  <a href="https://json-schema.org">JSON Schema</a> 是一种用来<strong>校验</strong>和<strong>注解</strong> JSON（或 YAML）数据的格式。
+  一份 JSON Schema 文档（简称 schema）可以表达这样的规则：
+</p>
+
+<blockquote style="margin:14px 0;padding:10px 16px;border-left:4px solid var(--line-2);color:var(--fg-soft)">
+  这份数据是一个对象；它必须有一个 <code>amount</code> 属性，是大于 0 的数字；它可以有一个 <code>currency</code> 属性，是字符串，取值只能是 <code>USD</code> 或 <code>EUR</code>。
+</blockquote>
+
+<p>
+  schema 里还能放不参与校验的附加信息，比如把 <code>currency</code> 描述为「ISO 4217 标准货币代码」。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="JSON Schema 描述数据的形状，校验器据此判断一份 JSON 数据是否合法">
+  <rect class="bx-a" x="20" y="24" width="250" height="176" rx="12"/>
+  <text class="ttl on-a" x="145" y="48" text-anchor="middle">JSON Schema</text>
+  <text class="mono sm" x="36" y="72">type: object</text>
+  <text class="mono sm" x="36" y="88">required: [amount]</text>
+  <text class="mono sm" x="36" y="104">properties:</text>
+  <text class="mono sm" x="36" y="120">  amount:</text>
+  <text class="mono sm" x="36" y="136">    type: number</text>
+  <text class="mono sm" x="36" y="152">  currency:</text>
+  <text class="mono sm" x="36" y="168">    type: string</text>
+  <text class="mono sm" x="36" y="184">    description: ISO 4217 …</text>
+
+  <rect class="bx" x="330" y="82" width="110" height="60" rx="10"/>
+  <text class="ttl" x="385" y="108" text-anchor="middle">校验器</text>
+  <text class="sm" x="385" y="126" text-anchor="middle">validator</text>
+  <path class="ln-a" d="M270 112 H328" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-g" x="510" y="24" width="230" height="74" rx="10"/>
+  <text class="mono sm" x="524" y="48">{ "amount": 12.5,</text>
+  <text class="mono sm" x="524" y="64">  "currency": "USD" }</text>
+  <text class="ttl on-g" x="726" y="88" text-anchor="end">&#10003; 合法</text>
+
+  <rect class="bx-r" x="510" y="126" width="230" height="74" rx="10"/>
+  <text class="mono sm" x="524" y="150">{ "amount": "twelve" }</text>
+  <text class="sm on-r" x="524" y="170">amount 应该是 number</text>
+  <text class="ttl on-r" x="726" y="190" text-anchor="end">&#10007; 不合法</text>
+
+  <path class="ln-g" d="M508 62 C470 62 470 100 442 104" marker-end="url(#ar-g)"/>
+  <path class="ln-r" d="M508 162 C470 162 470 124 442 120" marker-end="url(#ar-r)"/>
+</svg>
+<figcaption>图 7-1　schema 描述「数据应该长什么样」，校验器拿它去检查真实数据</figcaption>
+</figure>
+
+<p>
+  JSON Schema 独立于 OpenAPI 存在，可以单独用来校验配置文件、生成表单等。
+  在 OpenAPI 里，它负责描述和记录数据，并由此惠及 OpenAPI 的所有用途：设计、文档、Mock、测试……
+</p>
+
+<h3>亲手校验一次</h3>
+
+<p>各语言都有成熟的 JSON Schema 校验库。下面用同一个 schema 校验两份数据，感受一下它到底在做什么：</p>
+
+<div class="tabs" data-title="用 JSON Schema 校验数据">
+<div class="code" data-lang="python">
+<pre>
+# pip install jsonschema
+from jsonschema import Draft202012Validator
+
+schema = {
+    "type": "object",
+    "required": ["productReference", "name", "price"],
+    "properties": {
+        "productReference": {"type": "integer"},
+        "name": {"type": "string"},
+        "price": {"type": "number"},
+        "keywords": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+validator = Draft202012Validator(schema)
+
+good = {"productReference": 12345, "name": "Cowboy Bebop", "price": 49.99}
+bad = {"productReference": "12345", "name": "Cowboy Bebop", "keywords": ["anime", 42]}
+
+print(validator.is_valid(good))          # True
+
+for error in validator.iter_errors(bad):
+    print(list(error.path), "→", error.message)
+# [] → 'price' is a required property
+# ['productReference'] → '12345' is not of type 'integer'
+# ['keywords', 1] → 42 is not of type 'string'
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// npm install ajv
+import Ajv2020 from "ajv/dist/2020";
+
+const schema = {
+  type: "object",
+  required: ["productReference", "name", "price"],
+  properties: {
+    productReference: { type: "integer" },
+    name: { type: "string" },
+    price: { type: "number" },
+    keywords: { type: "array", items: { type: "string" } },
+  },
+};
+
+const ajv = new Ajv2020({ allErrors: true });
+const validate = ajv.compile(schema);
+
+const good = { productReference: 12345, name: "Cowboy Bebop", price: 49.99 };
+const bad = { productReference: "12345", name: "Cowboy Bebop", keywords: ["anime", 42] };
+
+console.log(validate(good));             // true
+
+if (!validate(bad)) {
+  for (const error of validate.errors ?? []) {
+    console.log(error.instancePath || "/", "→", error.message);
+  }
+}
+// / → must have required property 'price'
+// /productReference → must be integer
+// /keywords/1 → must be string
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 依赖：com.networknt:json-schema-validator
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.networknt.schema.*;
+
+public class ValidateProduct {
+    public static void main(String[] args) throws Exception {
+        String schemaJson = """
+            {
+              "type": "object",
+              "required": ["productReference", "name", "price"],
+              "properties": {
+                "productReference": { "type": "integer" },
+                "name": { "type": "string" },
+                "price": { "type": "number" },
+                "keywords": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+            """;
+
+        JsonSchema schema = JsonSchemaFactory
+            .getInstance(SpecVersion.VersionFlag.V202012)
+            .getSchema(schemaJson);
+
+        ObjectMapper mapper = new ObjectMapper();
+        var good = mapper.readTree("""
+            { "productReference": 12345, "name": "Cowboy Bebop", "price": 49.99 }""");
+        var bad = mapper.readTree("""
+            { "productReference": "12345", "name": "Cowboy Bebop", "keywords": ["anime", 42] }""");
+
+        System.out.println(schema.validate(good).isEmpty());     // true
+
+        schema.validate(bad).forEach(error -&gt; System.out.println(error.getMessage()));
+        // $: required property 'price' not found
+        // $.productReference: string found, integer expected
+        // $.keywords[1]: integer found, string expected
+    }
+}
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 版本与格式</div>
+  <ul>
+    <li>OpenAPI 3.1 用的是 JSON Schema <strong>2020-12</strong> 版，OpenAPI 3.0 用的是较老的版本。除非用到高级特性，两者写出来的 schema 通常一样。本章的写法两者都兼容。</li>
+    <li>OpenAPI 文档是 YAML，里面的 schema 也就用 YAML 写；文档是 JSON 的话 schema 也是 JSON。</li>
+  </ul>
+</div>
+
+<h2 id="where">把资源模型放在哪里</h2>
+
+<p>
+  上一章的 <code>schema</code> 属性都在各个操作里。但资源的<strong>完整模型</strong>应该放在另一个地方：<code>components.schemas</code>。
+  这里的 schema 不依附于任何操作，可以被多处引用。
+</p>
+
+<ul>
+  <li>可以像第 5 章那样，<strong>独立于操作</strong>来设计资源；</li>
+  <li>文档工具会单独展示这些模型，让人一眼看到 API 涉及哪些业务概念；</li>
+  <li>「商品」模型会被好几个操作返回，<strong>定义一次、到处引用</strong>，保证一致，也省得复制粘贴。</li>
+</ul>
+
+<div class="code" data-lang="yaml">
+<pre>
+openapi: 3.1.0
+info: ...
+paths: ...
+components:          # 存放可复用元素（schema、参数、响应……）
+  schemas:           # 可复用的 JSON Schema，每个有一个名字
+    Product: {}      # 先放个空的，马上来填
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 两个小约定</div>
+  <ul>
+    <li>schema 的名字没有硬性规定，但 <strong>PascalCase</strong>（<code>ProductSummary</code>）最常见，大概是因为它和类名的习惯一致。这些名字只出现在文档里，不会出现在实际传输的数据里。</li>
+    <li>顶层属性建议按 <code>info</code> → <code>paths</code> → <code>components</code> 的顺序排：读的人先关心概况，再看有哪些操作，最后看数据模型。</li>
+  </ul>
+</div>
+
+<h2 id="describe">用 JSON Schema 描述商品</h2>
+
+<p>目标是把第 5 章的这张表变成 schema：</p>
+
+<div class="tw">
+<table>
+  <tr><th>名称</th><th>类型</th><th>必填</th><th>说明</th></tr>
+  <tr><td><code>productReference</code></td><td>integer</td><td>&#10033;</td><td>唯一标识符</td></tr>
+  <tr><td><code>name</code></td><td>string</td><td>&#10033;</td><td></td></tr>
+  <tr><td><code>description</code></td><td>string</td><td></td><td></td></tr>
+  <tr><td><code>keywords</code></td><td>array of string</td><td></td><td></td></tr>
+  <tr><td><code>category</code></td><td>string</td><td>&#10033;</td><td></td></tr>
+  <tr><td><code>price</code></td><td>float</td><td>&#10033;</td><td>以美元计价</td></tr>
+  <tr><td><code>dateAdded</code></td><td>string</td><td>&#10033;</td><td>YYYY-MM-DD 格式</td></tr>
+  <tr><td><code>isProductUnavailable</code></td><td>boolean</td><td></td><td>暂时不可售</td></tr>
+  <tr><td><code>supplier</code></td><td>object（<code>supplierCode</code>&#10033;、<code>name</code>&#10033;）</td><td>&#10033;</td><td></td></tr>
+</table>
+</div>
+
+<h3>对象和它的属性</h3>
+
+<p>
+  schema 通常从 <code>type</code> 开始。对象的属性写在 <code>properties</code> 里：<strong>键是属性名，值又是一个 JSON Schema</strong>。
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+    Product:
+      type: object                    # 这是一个对象
+      properties:                     # 它的属性
+        productReference:             # 属性名
+          type: integer               #   ↓ 这里又是一个 schema
+          description: Unique identifier
+</pre>
+</div>
+
+<h3>原子类型</h3>
+
+<p>JSON Schema 有四种原子类型。把你习惯的编程语言类型映射过去：</p>
+
+<div class="tw">
+<table>
+  <tr><th>JSON Schema <code>type</code></th><th>示例值</th><th>Python</th><th>TypeScript</th><th>Java</th></tr>
+  <tr><td><code>string</code></td><td><code>"BD"</code></td><td><code>str</code></td><td><code>string</code></td><td><code>String</code></td></tr>
+  <tr><td><code>integer</code></td><td><code>12345</code></td><td><code>int</code></td><td><code>number</code></td><td><code>int</code> / <code>long</code></td></tr>
+  <tr><td><code>number</code></td><td><code>49.99</code></td><td><code>float</code></td><td><code>number</code></td><td><code>double</code> / <code>BigDecimal</code></td></tr>
+  <tr><td><code>boolean</code></td><td><code>false</code></td><td><code>bool</code></td><td><code>boolean</code></td><td><code>boolean</code></td></tr>
+</table>
+</div>
+
+<div class="code" data-lang="yaml">
+<pre>
+    Product:
+      type: object
+      properties:
+        productReference:
+          type: integer
+          description: Unique identifier
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string                # 没有 description 也可以
+        price:
+          type: number                # 浮点数用 number
+          description: Price in USD
+        dateAdded:
+          type: string
+          format: date                # 用 format 补充说明字符串的格式
+        isProductUnavailable:
+          type: boolean
+          description: Temporarily unavailable
+</pre>
+</div>
+
+<p>
+  <code>format</code> 为 <code>string</code>、<code>integer</code>、<code>number</code> 提供更精确的格式信息。
+  我们在表格里只能用文字写「YYYY-MM-DD 格式」，在 JSON Schema 里可以正式地写成 <code>format: date</code>。常见取值：
+</p>
+
+<div class="tw">
+<table>
+  <tr><th><code>format</code></th><th>用于</th><th>示例</th></tr>
+  <tr><td><code>date</code></td><td>string</td><td><code>1997-09-18</code></td></tr>
+  <tr><td><code>time</code></td><td>string</td><td><code>13:08:23+00:00</code></td></tr>
+  <tr><td><code>date-time</code></td><td>string</td><td><code>1997-09-18T13:08:23+00:00</code></td></tr>
+  <tr><td><code>duration</code></td><td>string</td><td><code>P3D</code>（3 天）</td></tr>
+  <tr><td><code>int32</code> / <code>int64</code></td><td>integer（OpenAPI 定义）</td><td></td></tr>
+  <tr><td><code>float</code> / <code>double</code></td><td>number（OpenAPI 定义）</td><td></td></tr>
+</table>
+</div>
+
+<h3>嵌套对象</h3>
+
+<p>对象类型的属性，写法和最外层的对象一模一样 —— 这就是 JSON Schema 的递归之美：<strong>不管在哪一层，每个元素都是一个 schema</strong>。</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+        supplier:
+          type: object                # supplier 也是对象，就像 Product 本身
+          properties:
+            supplierCode:
+              type: string
+              description: Unique identifier
+            name:
+              type: string
+</pre>
+</div>
+
+<h3>数组</h3>
+
+<p>数组的 <code>type</code> 是 <code>array</code>，再用 <code>items</code> 给出<strong>元素</strong>的 schema：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+        keywords:
+          type: array                 # 这是一个数组
+          items:                      # 数组元素的 schema
+            type: string              # → 字符串的数组
+</pre>
+</div>
+
+<p><code>items</code> 里可以放任何 schema，所以对象的数组、数组的数组都能表达。</p>
+
+<h3>必填属性</h3>
+
+<p>
+  「必填」不写在属性自己身上，而是写在<strong>所属对象</strong>的 <code>required</code> 列表里。
+  不在列表里的就是可选的。每一层对象各有各的 <code>required</code>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="required 列表决定哪些属性必须出现：左侧是包含全部属性的合法数据，右侧是只含必填属性的合法数据">
+  <rect class="bx-a" x="20" y="20" width="230" height="260" rx="12"/>
+  <text class="ttl on-a" x="135" y="44" text-anchor="middle">schema</text>
+  <text class="mono sm" x="36" y="66">type: object</text>
+  <text class="mono sm on-a" x="36" y="84" font-weight="700">required:</text>
+  <text class="mono sm on-a" x="36" y="100">  - productReference</text>
+  <text class="mono sm on-a" x="36" y="116">  - name</text>
+  <text class="mono sm on-a" x="36" y="132">  - category</text>
+  <text class="mono sm on-a" x="36" y="148">  - price</text>
+  <text class="mono sm on-a" x="36" y="164">  - dateAdded</text>
+  <text class="mono sm on-a" x="36" y="180">  - supplier</text>
+  <text class="mono sm" x="36" y="198">properties:</text>
+  <text class="mono sm" x="36" y="214">  …（9 个属性）</text>
+  <text class="sm" x="135" y="244" text-anchor="middle">description、keywords、</text>
+  <text class="sm" x="135" y="260" text-anchor="middle">isProductUnavailable 不在列表里</text>
+
+  <rect class="bx-g" x="280" y="20" width="220" height="260" rx="12"/>
+  <text class="ttl on-g" x="390" y="44" text-anchor="middle">&#10003; 全部属性</text>
+  <text class="mono sm" x="296" y="68">{</text>
+  <text class="mono sm" x="296" y="84">  "productReference": …,</text>
+  <text class="mono sm" x="296" y="100">  "name": …,</text>
+  <text class="mono sm on-b" x="296" y="116">  "description": …,</text>
+  <text class="mono sm on-b" x="296" y="132">  "keywords": …,</text>
+  <text class="mono sm" x="296" y="148">  "category": …,</text>
+  <text class="mono sm" x="296" y="164">  "price": …,</text>
+  <text class="mono sm" x="296" y="180">  "dateAdded": …,</text>
+  <text class="mono sm on-b" x="296" y="196">  "isProductUnavailable": …,</text>
+  <text class="mono sm" x="296" y="212">  "supplier": { … }</text>
+  <text class="mono sm" x="296" y="228">}</text>
+  <text class="sm on-b" x="390" y="260" text-anchor="middle">蓝色：可选属性</text>
+
+  <rect class="bx-g" x="520" y="20" width="220" height="260" rx="12"/>
+  <text class="ttl on-g" x="630" y="44" text-anchor="middle">&#10003; 只有必填属性</text>
+  <text class="mono sm" x="536" y="68">{</text>
+  <text class="mono sm" x="536" y="84">  "productReference": …,</text>
+  <text class="mono sm" x="536" y="100">  "name": …,</text>
+  <text class="mono sm" x="536" y="148">  "category": …,</text>
+  <text class="mono sm" x="536" y="164">  "price": …,</text>
+  <text class="mono sm" x="536" y="180">  "dateAdded": …,</text>
+  <text class="mono sm" x="536" y="212">  "supplier": { … }</text>
+  <text class="mono sm" x="536" y="228">}</text>
+  <text class="sm" x="630" y="260" text-anchor="middle">两份数据都符合 schema</text>
+</svg>
+<figcaption>图 7-2　作为输入时，必填 = 消费者必须提供；作为输出时，必填 = API 一定会返回</figcaption>
+</figure>
+
+<h3>完整的 Product schema</h3>
+
+<div class="code" data-lang="yaml" data-file="components.schemas.Product">
+<pre>
+components:
+  schemas:
+    Product:
+      type: object
+      required:                       # 这一层对象的必填属性
+        - productReference
+        - name
+        - category
+        - price
+        - dateAdded
+        - supplier
+      properties:
+        productReference:
+          type: integer
+          description: Unique identifier
+        name:
+          type: string
+        description:
+          type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        category:
+          type: string
+        price:
+          type: number
+          description: Price in USD
+        dateAdded:
+          type: string
+          format: date
+        isProductUnavailable:
+          type: boolean
+          description: Temporarily unavailable
+        supplier:
+          type: object
+          required:                   # supplier 这一层的必填属性
+            - supplierCode
+            - name
+          properties:
+            supplierCode:
+              type: string
+              description: Unique identifier
+            name:
+              type: string
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 属性的顺序</div>
+  <p><code>type</code>、<code>required</code>、<code>properties</code> 的先后没有规定，但建议就按这个顺序写。<code>properties</code> 往往很长，如果把 <code>type</code> 和 <code>required</code> 放在它后面，很容易被淹没。</p>
+</div>
+
+<h2 id="nonbody">描述非 body 数据：内联 schema</h2>
+
+<p>
+  和上一章一样，输入输出数据按位置分两组：<strong>非 body 数据</strong>（路径参数、查询参数、请求头、响应头）和 <strong>body 数据</strong>。
+  它们在 OpenAPI 里位置不同，但都用 JSON Schema 来描述。先看非 body 数据，顺便学习<strong>内联 schema</strong> —— 直接写在 <code>schema</code> 属性下面的 schema。
+</p>
+
+<h3>路径参数</h3>
+
+<p>参数往往对应资源的某个属性。直接把那个属性的 schema 抄过来：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /products/{productReference}:
+    summary: Product
+    parameters:
+      - name: productReference
+        in: path
+        required: true
+        schema:
+          type: integer          # 抄自 Product.properties.productReference
+</pre>
+</div>
+
+<h3>数组型的查询参数</h3>
+
+<p>
+  查询参数不一定是原子值。<code>keywords</code> 筛选条件是个字符串数组，它在 URL 里该怎么写？
+  OpenAPI 用 <code>style</code> 和 <code>explode</code> 来说明<strong>序列化方式</strong>：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+  /products:
+    get:
+      summary: Search for products
+      parameters:
+        - name: keywords
+          in: query
+          style: form            # 查询参数的默认 style
+          explode: false         # 默认是 true；设为 false → 逗号分隔
+          schema:
+            type: array
+            items:
+              type: string
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="explode 为 true 时数组展开为多个同名参数，为 false 时用逗号分隔">
+  <rect class="bx" x="20" y="48" width="170" height="54" rx="10"/>
+  <text class="mono" x="105" y="72" text-anchor="middle">["anime", "space"]</text>
+  <text class="sm" x="105" y="90" text-anchor="middle">keywords 的值</text>
+
+  <path class="ln" d="M190 66 C230 66 230 40 268 40" marker-end="url(#ar)"/>
+  <path class="ln-a" d="M190 84 C230 84 230 110 268 110" marker-end="url(#ar-a)"/>
+
+  <rect class="bx" x="270" y="16" width="470" height="48" rx="8"/>
+  <text class="sm" x="284" y="36">explode: true（默认）</text>
+  <text class="mono" x="284" y="54">?keywords=anime&amp;keywords=space</text>
+  <text class="sm" x="726" y="46" text-anchor="end">同名参数重复出现</text>
+
+  <rect class="bx-a" x="270" y="86" width="470" height="48" rx="8"/>
+  <text class="sm on-a" x="284" y="106">explode: false</text>
+  <text class="mono" x="284" y="124">?keywords=anime,space</text>
+  <text class="sm" x="726" y="116" text-anchor="end">一个参数，逗号分隔</text>
+</svg>
+<figcaption>图 7-3　同一个数组的两种序列化方式。这是设计决定，一旦选了就要在整个 API 里保持一致</figcaption>
+</figure>
+
+<p>这个设计选择会直接影响两端的代码。下面是客户端按 <code>explode: false</code> 拼 URL、服务端把它解析回数组的写法：</p>
+
+<div class="tabs" data-title="数组查询参数：逗号分隔（explode: false）">
+<div class="code" data-lang="python">
+<pre>
+# ---------- 客户端 ----------
+import httpx
+
+keywords = ["anime", "space"]
+r = httpx.get("https://api.shp.ng/products",
+              params={"keywords": ",".join(keywords), "category": "BD"})
+print(r.url)   # https://api.shp.ng/products?keywords=anime%2Cspace&amp;category=BD
+
+# 如果 API 设计的是 explode: true，则直接传列表：
+#   params={"keywords": keywords}  →  ?keywords=anime&amp;keywords=space
+
+
+# ---------- 服务端（FastAPI）----------
+from fastapi import FastAPI, Query
+
+app = FastAPI()
+
+@app.get("/products")
+def search_products(keywords: str | None = Query(None), category: str | None = None):
+    wanted = keywords.split(",") if keywords else []     # "anime,space" → ["anime", "space"]
+    ...
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// ---------- 客户端 ----------
+const keywords = ["anime", "space"];
+
+const url = new URL("https://api.shp.ng/products");
+url.searchParams.set("keywords", keywords.join(","));
+url.searchParams.set("category", "BD");
+console.log(url.toString());   // https://api.shp.ng/products?keywords=anime%2Cspace&amp;category=BD
+
+// 如果 API 设计的是 explode: true，则逐个 append：
+//   keywords.forEach((k) =&gt; url.searchParams.append("keywords", k));
+//   → ?keywords=anime&amp;keywords=space
+
+
+// ---------- 服务端（Hono）----------
+import { Hono } from "hono";
+const app = new Hono();
+
+app.get("/products", (c) =&gt; {
+  const wanted = c.req.query("keywords")?.split(",") ?? [];   // "anime,space" → ["anime", "space"]
+  // explode: true 的写法是 c.req.queries("keywords")
+  return c.json([]);
+});
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// ---------- 客户端 ----------
+List&lt;String&gt; keywords = List.of("anime", "space");
+
+URI uri = UriComponentsBuilder.fromUriString("https://api.shp.ng/products")
+    .queryParam("keywords", String.join(",", keywords))
+    .queryParam("category", "BD")
+    .build().toUri();
+System.out.println(uri);   // https://api.shp.ng/products?keywords=anime,space&amp;category=BD
+
+// 如果 API 设计的是 explode: true：
+//   .queryParam("keywords", keywords)  →  ?keywords=anime&amp;keywords=space
+
+
+// ---------- 服务端（Spring Boot）----------
+@GetMapping("/products")
+public List&lt;ProductSummary&gt; searchProducts(
+        // Spring 对 List 参数两种写法都能解析：逗号分隔或同名重复
+        @RequestParam(required = false) List&lt;String&gt; keywords,
+        @RequestParam(required = false) String category) {
+    ...
+}
+</pre>
+</div>
+</div>
+
+<h3>响应头</h3>
+
+<p>有些数据没法从资源模型里抄，比如 <code>Location</code> 头（新资源的 URL），就直接写一个专用的内联 schema：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+      responses:
+        "201":
+          headers:
+            Location:
+              description: Product URL
+              required: true
+              schema:
+                type: string       # 不来自任何资源模型，现写的
+</pre>
+</div>
+
+<h2 id="body">描述 body 数据：引用可复用 schema</h2>
+
+<h3>用 $ref 引用</h3>
+
+<p>
+  任何出现 schema 的地方，既可以写内联 schema，也可以写一个<strong>引用</strong>：<code>$ref</code> 属性，值是一个 <strong>JSON Pointer</strong>，指向真正的 schema 所在的位置。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="两个操作的响应通过 $ref 引用同一个定义在 components.schemas 下的 Product schema">
+  <rect class="bx" x="20" y="20" width="360" height="110" rx="10"/>
+  <text class="mono sm" x="34" y="42">paths:</text>
+  <text class="mono sm" x="34" y="58">  /products:</text>
+  <text class="mono sm" x="34" y="74">    post: … responses: "201": … schema:</text>
+  <text class="mono sm on-a" x="34" y="94" font-weight="700">      $ref: "#/components/schemas/Product"</text>
+  <text class="sm" x="366" y="120" text-anchor="end">添加商品 → 返回创建的商品</text>
+
+  <rect class="bx" x="20" y="150" width="360" height="110" rx="10"/>
+  <text class="mono sm" x="34" y="172">  /products/{productReference}:</text>
+  <text class="mono sm" x="34" y="188">    get: … responses: "200": … schema:</text>
+  <text class="mono sm on-a" x="34" y="208" font-weight="700">      $ref: "#/components/schemas/Product"</text>
+  <text class="sm" x="366" y="250" text-anchor="end">读取商品 → 返回商品</text>
+
+  <rect class="bx-a" x="480" y="70" width="260" height="150" rx="12"/>
+  <text class="mono sm" x="496" y="94">components:</text>
+  <text class="mono sm" x="496" y="110">  schemas:</text>
+  <text class="mono sm on-a" x="496" y="128" font-weight="700">    Product:</text>
+  <text class="mono sm" x="496" y="144">      type: object</text>
+  <text class="mono sm" x="496" y="160">      required: …</text>
+  <text class="mono sm" x="496" y="176">      properties: …</text>
+  <text class="sm" x="610" y="206" text-anchor="middle">只定义一次</text>
+
+  <path class="ln-a" d="M330 98 C420 98 420 124 478 124" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M330 204 C420 204 420 130 478 128" marker-end="url(#ar-a)"/>
+
+  <text class="mono" x="430" y="268" style="font-size:13px"><tspan class="on-p" font-weight="700">#</tspan>/<tspan class="on-b" font-weight="700">components</tspan>/<tspan class="on-b" font-weight="700">schemas</tspan>/<tspan class="on-a" font-weight="700">Product</tspan></text>
+  <text class="sm" x="430" y="284">文档根 / 属性 / 属性 / 属性</text>
+</svg>
+<figcaption>图 7-4　<code>#</code> 代表文档的根，后面每段是一层属性。整个值要加引号，因为 <code>#</code> 在 YAML 里是注释符号</figcaption>
+</figure>
+
+<p>
+  引用避免了重复，也避免了「复制了五份、后来只改了三份」的不一致。要改模型，只改一处。
+  错误响应同理：在 <code>components.schemas</code> 里定义一个 <code>Error</code>，所有 <code>4XX</code>、<code>5XX</code> 响应都引用它。
+</p>
+
+<h3>派生模型</h3>
+
+<p>
+  第 5 章从完整模型派生出了创建模型等。在 OpenAPI 里（现阶段）最简单的做法是：复制 <code>Product</code>，改个名字，然后从 <code>properties</code> 和 <code>required</code> 里删掉不需要的属性。
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+components:
+  schemas:
+    Product: ...
+
+    ProductCreationOrReplacement:     # Product 的副本，去掉了服务端管理的属性：
+      type: object                    #   productReference、dateAdded、supplier.name
+      required:
+        - name
+        - category
+        - price
+        - supplier
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        category:
+          type: string
+        price:
+          type: number
+          description: Price in USD
+        isProductUnavailable:
+          type: boolean
+        supplier:
+          type: object
+          required:
+            - supplierCode
+          properties:
+            supplierCode:
+              type: string
+</pre>
+</div>
+
+<p>然后在两个操作的请求体里引用它：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /products:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductCreationOrReplacement"
+  /products/{productReference}:
+    put:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProductCreationOrReplacement"
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 复制粘贴的代价</div>
+  <p>两份几乎一样的 schema 时间长了可能会各自跑偏。现阶段先这么做，因为简单。第 17 章会介绍如何用一个「读写通用」的 schema 取代它们。</p>
+</div>
+
+<h3>混用内联和引用</h3>
+
+<p>
+  「搜索商品」返回的是 <code>ProductSummary</code> 的<strong>数组</strong>。数组这层壳只在这里用，写成内联；元素则引用可复用的 schema：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /products:
+    get:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array                                      # 内联的数组 schema
+                items:
+                  $ref: "#/components/schemas/ProductSummary"    # 元素是引用
+components:
+  schemas:
+    ProductSummary:                   # Product 的摘要版
+      type: object
+      required: [productReference, name, category, price]
+      properties:
+        productReference:
+          type: integer
+        name:
+          type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        category:
+          type: string
+        price:
+          type: number
+</pre>
+</div>
+
+<p>可复用 schema 内部也能引用别的 schema。比如把 <code>Product</code> 里的 <code>supplier</code> 抽成 <code>SupplierSummary</code>，将来「搜索供应商」也能用它：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+components:
+  schemas:
+    Product:
+      type: object
+      properties:
+        supplier:
+          $ref: "#/components/schemas/SupplierSummary"
+    SupplierSummary:
+      type: object
+      required: [supplierCode, name]
+      properties:
+        supplierCode:
+          type: string
+        name:
+          type: string
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; YAML 的紧凑写法</div>
+  <p>
+    上面的 <code>required: [productReference, name]</code> 是 YAML 的「流式」写法，和分行用 <code>-</code> 列出完全等价，只是更省地方。
+  </p>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 先别过度优化</div>
+  <p>把模型拆小有助于避免重复，但第一遍请专注于<strong>把 API 描述清楚</strong>，别陷进 OpenAPI 的技巧里。优化是第 17 章的事。</p>
+</div>
+
+<h2 id="types">从 schema 到代码里的类型</h2>
+
+<p>
+  schema 写好之后，实现和消费 API 的代码里都需要对应的类型。可以手写，也可以用生成器（如 <code>openapi-generator</code>、<code>openapi-typescript</code>、<code>datamodel-code-generator</code>）从 OpenAPI 文档自动生成。
+  下面是 <code>ProductSummary</code> 在三种语言里的样子，注意必填/可选是怎么体现的：
+</p>
+
+<div class="tabs" data-title="ProductSummary schema 对应的类型">
+<div class="code" data-lang="python">
+<pre>
+# 可由 datamodel-code-generator 从 OpenAPI 文档生成
+from pydantic import BaseModel
+
+class ProductSummary(BaseModel):
+    productReference: int            # type: integer，在 required 里 → 没有默认值
+    name: str
+    keywords: list[str] | None = None   # 不在 required 里 → 可以缺省
+    category: str
+    price: float                     # type: number
+
+# 解析并校验一段 JSON：不符合 schema 会抛出 ValidationError
+summary = ProductSummary.model_validate_json(
+    '{"productReference": 12345, "name": "Cowboy Bebop", "category": "BD", "price": 49.99}'
+)
+print(summary.price)                 # 49.99
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// 可由 openapi-typescript 从 OpenAPI 文档生成
+export interface ProductSummary {
+  productReference: number;          // type: integer，在 required 里 → 没有问号
+  name: string;
+  keywords?: string[];               // 不在 required 里 → 带问号，可以缺省
+  category: string;
+  price: number;                     // type: number
+}
+
+// TypeScript 的类型只在编译期存在；运行时要校验的话用 Ajv 或 Zod
+const response = await fetch("https://api.shp.ng/products?category=BD");
+const products: ProductSummary[] = await response.json();
+console.log(products[0]?.price);     // 49.99
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 可由 openapi-generator 从 OpenAPI 文档生成
+public record ProductSummary(
+    @NotNull Integer productReference,   // type: integer，在 required 里 → @NotNull
+    @NotNull String name,
+    List&lt;String&gt; keywords,               // 不在 required 里 → 可以为 null
+    @NotNull String category,
+    @NotNull Double price                // type: number
+) {}
+
+// 用 Jackson 把 JSON 解析成 record
+ObjectMapper mapper = new ObjectMapper();
+ProductSummary summary = mapper.readValue("""
+    {"productReference": 12345, "name": "Cowboy Bebop", "category": "BD", "price": 49.99}
+    """, ProductSummary.class);
+System.out.println(summary.price());     // 49.99
+</pre>
+</div>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>JSON Schema 是独立的格式，OpenAPI 用它来描述数据。</li>
+  <li>在添加完 HTTP 操作之后，一边设计数据一边用 JSON Schema 把它写进 OpenAPI。</li>
+  <li>把资源模型定义为 <code>components.schemas</code> 下的可复用 schema，既能更好地呈现业务概念，也便于跨操作复用。</li>
+  <li>schema 通常以 <code>type</code> 开头：<code>object</code>、<code>array</code>、<code>string</code>、<code>number</code>、<code>integer</code>、<code>boolean</code>。</li>
+  <li>对象有 <code>properties</code> 映射（属性名 → schema）和 <code>required</code> 列表（必填属性的名字）。</li>
+  <li>数组的 <code>items</code> 是其元素的 schema。</li>
+  <li>操作的输入输出 schema 填在上一章留下的 <code>schema</code> 属性里。</li>
+  <li><code>components.schemas.Name</code> 可以用 <code>$ref: "#/components/schemas/Name"</code> 引用。</li>
+  <li>用引用来避免重复和不必要的差异；派生模型也定义为可复用 schema。</li>
+  <li><code>schema</code> 的值可以是内联 schema、引用，或两者混用。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      像素画设备的「屏幕」由 36×36 个发光方块组成。屏幕有 <code>id</code>（如 <code>SC001</code>）和一个像素矩阵（数组的数组）。每个像素有 <code>rgb</code> 数组（如 <code>[10, 23, 45]</code>）、0 到 1 之间的 <code>brightness</code>（如 <code>0.3</code>）和 <code>on</code> 标志。除 <code>brightness</code> 外都必填。写出 <code>Screen</code>、<code>Pixels</code>、<code>Pixel</code> 三个可复用 schema。
+      <details class="ans"><summary>参考答案</summary>
+<div class="code" data-lang="yaml"><pre>
+components:
+  schemas:
+    Screen:
+      type: object
+      required: [id, pixels]
+      properties:
+        id:
+          type: string
+        pixels:
+          $ref: "#/components/schemas/Pixels"
+    Pixels:
+      type: array            # 行的数组
+      items:
+        type: array          # 每一行是像素的数组
+        items:
+          $ref: "#/components/schemas/Pixel"
+    Pixel:
+      type: object
+      required: [rgb, on]
+      properties:
+        rgb:
+          type: array
+          items:
+            type: integer
+        brightness:
+          type: number
+        on:
+          type: boolean
+</pre></div>
+        仓库里的 <code>Appendix - Solutions to Exercises/Listing A.10</code> 是书中的答案。
+      </details>
+    </li>
+    <li>
+      音乐流媒体 API。用 OpenAPI 描述这次调用：<code>GET /artists/pink-floyd/albums?releaseYear=1969</code>，返回 <code>200</code> 和一个专辑数组，每张专辑有 <code>id</code>、<code>name</code>、<code>mainArtist</code>（含 <code>id</code>、<code>name</code>）、<code>releaseYear</code>，以及可能没有的 <code>comment</code>。
+      <details class="ans"><summary>提示</summary>
+        路径 <code>/artists/{artistId}/albums</code>，路径级参数 <code>artistId</code>（string，必填）；操作级查询参数 <code>releaseYear</code>（integer，可选）；
+        <code>200</code> 响应是内联数组，<code>items</code> 引用 <code>AlbumSummary</code>；<code>AlbumSummary</code> 的 <code>mainArtist</code> 引用 <code>ArtistSummary</code>；<code>comment</code> 不进 <code>required</code>。
+        答案见仓库的 <code>Listing A.11</code> 和 <code>A.12</code>。
+      </details>
+    </li>
+    <li>
+      招聘平台的职位数据为 <code>{"reference":"xz789","created":"2024-12-08","title":"Technical book author","description":"Writing technical books"}</code>。描述「创建职位」和「更新（替换）职位」两个操作。
+      <details class="ans"><summary>提示</summary>
+        定义 <code>JobOffer</code>（完整模型，四个属性）和 <code>JobOfferCreationOrReplacement</code>（去掉服务端生成的 <code>reference</code> 和 <code>created</code>）。
+        <code>POST /job-offers</code>：请求体引用创建模型，<code>201</code> 返回 <code>JobOffer</code> 并带 <code>Location</code> 头。
+        <code>PUT /job-offers/{reference}</code>：同样的请求体，<code>200</code> 返回 <code>JobOffer</code>，别忘了 <code>404</code>。答案见仓库的 <code>Listing A.13</code>–<code>A.15</code>。
+      </details>
+    </li>
+    <li>把本章的校验脚本跑起来，然后往 schema 里加上 <code>supplier</code> 嵌套对象及其 <code>required</code>，构造一份缺少 <code>supplierCode</code> 的数据，看校验器报什么错。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

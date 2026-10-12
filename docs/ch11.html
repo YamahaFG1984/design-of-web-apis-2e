@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 11 章 · 好用、可互操作的 API — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="11">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 11 章</span>
+<h1>好用、可互操作的 API</h1>
+<p class="lede">
+  数据、操作、操作流都打磨过了，最后退到最远处看<strong>整个 API</strong>。
+  设想一家公司的信息系统被分成二十几块，每块暴露一个就叫「API」的 API，里面有几百个操作 —— 没有人（也没有 AI）能在里面找到自己要的东西，连作者自己都不行。
+  这一章讨论三件事：该做一个还是多个 API、怎么给它起名、要不要让它像网站一样可以「浏览」。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>会通过识别相互独立的操作集合，判断该拆成几个 API</li>
+    <li>会给 API 起一个说明其用途的名字，并把它放进基础路径</li>
+    <li>了解用 <code>OPTIONS</code> 方法、<code>Link</code> 头和超媒体格式实现运行时发现</li>
+    <li>知道什么时候值得（以及不值得）做超媒体 API</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="what">API 层面的好用</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="好用可互操作这一层从数据、操作、操作流到 API 的四个层级">
+  <rect class="bx-a" x="20" y="20" width="720" height="140" rx="16"/>
+  <text class="ttl on-a" x="40" y="46">API　← 本章</text>
+  <text class="sm" x="724" y="46" text-anchor="end">目的清晰 · 名字达意 · 可浏览</text>
+  <rect class="bx-b" x="40" y="58" width="560" height="92" rx="14"/>
+  <text class="ttl on-b" x="58" y="82">操作流（第 10 章）</text>
+  <rect class="bx-g" x="58" y="92" width="400" height="50" rx="12"/>
+  <text class="ttl on-g" x="74" y="122">操作（第 9 章）</text>
+  <rect class="bx" x="230" y="100" width="210" height="34" rx="10"/>
+  <text class="ttl" x="335" y="122" text-anchor="middle">数据（第 8 章）</text>
+</svg>
+<figcaption>图 11-1　「好用、可互操作」这一层的最后一站。和操作流一样：零件都好，不等于整体就好</figcaption>
+</figure>
+
+<p>除了使用好用的零件，一个好用、可互操作的 API 还要：</p>
+<ul>
+  <li><strong>有清晰、聚焦的目的。</strong>它不试图满足所有可能的需求，所以不会让开发者不知所措。</li>
+  <li><strong>有一个有意义的名字。</strong></li>
+  <li><strong>（可选）帮助消费者在运行时发现</strong>可用的操作和资源之间的关系。</li>
+</ul>
+
+<h2 id="split">一个 API 还是多个</h2>
+
+<p>
+  租车公司的信息系统涵盖财务、人事、云基础设施和租车业务。把所有操作塞进一个叫「API」的内部 API，开发者会被淹没。
+  按领域拆成四个？可能还不够细：「租车 API」听起来清楚，实际上包含了<em>租赁管理</em>、<em>客户管理</em>、<em>车队管理</em>几个子领域，每个都可以是目的更明确的独立 API。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 这也是架构问题</div>
+  <p>
+    如何把信息系统划分成块，本身是一门学问，通常由架构师或技术负责人主导。作为 API 设计者，我们会在较小的尺度上遇到这个问题 ——
+    本节从 API 设计的角度给出一些方法，但请和你的架构师一起决定。安全（第 12 章）和组织/系统约束（第 14 章）也会影响拆分。
+  </p>
+</div>
+
+<h3>什么时候讨论</h3>
+<p>
+  在<strong>优化完数据、操作和流程之后</strong>。因为优化过程中会冒出新的资源和操作，过早划分依据的是不完整的信息。
+  如果拿不准，可以先放在一个 API 里，等领域看得更清楚了再拆。代价很小：消费者改一下调用的配置或代码（第 15 章）。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; API 是接口，不是应用</div>
+  <p>一个应用完全可以对外暴露多个 API。拆 API 不等于拆服务。</p>
+</div>
+
+<h3>识别相互独立的操作集合</h3>
+
+<p>
+  把所有操作画出来，按第 10 章优化后的<strong>操作流</strong>把它们连起来，再结合领域专家的知识，独立的集合就会显现。以银行 API 为例：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 320" role="img" aria-label="银行 API 的操作按流程连接后形成账户信息、转账、开户申请三个相互独立的集合">
+  <rect class="bx-b" x="20" y="20" width="230" height="280" rx="14"/>
+  <text class="ttl on-b" x="135" y="44" text-anchor="middle">账户信息</text>
+  <rect class="bx" x="40" y="60" width="90" height="28" rx="6"/><text class="sm" x="85" y="79" text-anchor="middle">列出账户</text>
+  <rect class="bx" x="140" y="60" width="90" height="28" rx="6"/><text class="sm" x="185" y="79" text-anchor="middle">列出户主</text>
+  <rect class="bx" x="40" y="120" width="90" height="28" rx="6"/><text class="sm" x="85" y="139" text-anchor="middle">读取账户</text>
+  <rect class="bx" x="140" y="120" width="90" height="28" rx="6"/><text class="sm" x="185" y="139" text-anchor="middle">读取户主</text>
+  <rect class="bx" x="40" y="180" width="190" height="28" rx="6"/><text class="sm" x="135" y="199" text-anchor="middle">搜索账户的交易</text>
+  <path class="ln-b" d="M85 88 V118" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M185 88 V118" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M85 148 V178" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M130 134 H138" marker-end="url(#ar-b)"/>
+
+  <rect class="bx-g" x="266" y="20" width="250" height="280" rx="14"/>
+  <text class="ttl on-g" x="391" y="44" text-anchor="middle">转账</text>
+  <rect class="bx" x="282" y="60" width="104" height="28" rx="6"/><text class="sm" x="334" y="79" text-anchor="middle">列出收款人</text>
+  <rect class="bx" x="396" y="60" width="104" height="28" rx="6"/><text class="sm" x="448" y="79" text-anchor="middle">添加收款人</text>
+  <rect class="bx" x="396" y="96" width="104" height="28" rx="6"/><text class="sm" x="448" y="115" text-anchor="middle">删除收款人</text>
+  <rect class="bx" x="282" y="140" width="218" height="28" rx="6"/><text class="sm" x="391" y="159" text-anchor="middle">列出付款方和收款方</text>
+  <rect class="bx" x="282" y="190" width="104" height="28" rx="6"/><text class="sm" x="334" y="209" text-anchor="middle">转账</text>
+  <rect class="bx" x="396" y="190" width="104" height="28" rx="6"/><text class="sm" x="448" y="209" text-anchor="middle">列出转账</text>
+  <rect class="bx" x="282" y="240" width="104" height="28" rx="6"/><text class="sm" x="334" y="259" text-anchor="middle">取消转账</text>
+  <rect class="bx" x="396" y="240" width="104" height="28" rx="6"/><text class="sm" x="448" y="259" text-anchor="middle">修改转账</text>
+  <path class="ln-g" d="M334 168 V188" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M448 218 V238" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M430 218 C420 230 380 234 370 240" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M386 74 H394" marker-end="url(#ar-g)"/>
+
+  <rect class="bx-p" x="532" y="20" width="208" height="280" rx="14"/>
+  <text class="ttl on-p" x="636" y="44" text-anchor="middle">开户申请</text>
+  <rect class="bx" x="552" y="70" width="168" height="28" rx="6"/><text class="sm" x="636" y="89" text-anchor="middle">发起开户申请</text>
+  <rect class="bx" x="552" y="130" width="168" height="28" rx="6"/><text class="sm" x="636" y="149" text-anchor="middle">更新开户申请</text>
+  <rect class="bx" x="552" y="190" width="168" height="28" rx="6"/><text class="sm" x="636" y="209" text-anchor="middle">确认开户申请</text>
+  <path class="ln-p" d="M636 98 V128" marker-end="url(#ar-p)"/>
+  <path class="ln-p" d="M636 158 V188" marker-end="url(#ar-p)"/>
+
+  <text class="sm" x="135" y="284" text-anchor="middle">集合之间没有流程连线</text>
+  <text class="sm" x="636" y="284" text-anchor="middle">→ 可以各自独立使用</text>
+</svg>
+<figcaption>图 11-2　消费者发起一笔转账，既不需要「账户信息」也不需要「开户申请」里的操作 —— 可以拆成三个 API</figcaption>
+</figure>
+
+<h3>子 API 之间可以有联系</h3>
+
+<p>
+  回想第 10 章优化转账流程之前：我们用「列出账户」来获取付款方。那时很容易觉得账户信息和转账都「和账户有关」，应该放在一起。
+  优化之后，转账有了自己的「列出付款方」。<em>账户信息里的账户</em>和<em>转账里的付款方</em>是两个不同的资源，但指向同一个业务概念，并共享一个<strong>可互操作的标识符 —— IBAN</strong>。
+</p>
+<p>
+  于是两个 API 既独立又能配合：消费者可以只用转账 API 完成转账，也可以拿着从账户信息 API（或别的任何地方）得到的 IBAN 来转账。IBAN 从哪来并不重要。
+</p>
+
+<div class="box deep">
+  <div class="t">&#128218; 两个可以借力的东西</div>
+  <ul>
+    <li><strong>限界上下文（Bounded Context）</strong>：领域驱动设计（DDD）里的概念，把一个大的领域模型拆成若干相互独立、但可以共享某些概念的小模型。和这里做的事是一回事。</li>
+    <li><strong>现成的业务模型</strong>：你的架构师可能已经把业务划分好了；行业里也有标准模型（保险业的 ACORD、银行业的 BIAN、零售业的 ARTS）。可以直接参考 —— 不过这类企业级模型准确归准确，未必好用，也未必适合公开 API。</li>
+  </ul>
+</div>
+
+<h2 id="name">用名字说清 API 的目的</h2>
+
+<p>
+  名字划定了 API 的边界，也是潜在用户了解它的第一个线索。和数据的名字一样，API 的名字在设计过程中可以变：
+  一开始取自需求，等粒度讨论清楚后再定稿。
+</p>
+
+<div class="tw">
+<table>
+  <tr><th>名字</th><th>类型</th><th>评价</th></tr>
+  <tr><td>「API」「Web Service」</td><td>泛泛的</td><td><span class="tag-r">&#10007;</span> 没说它做什么，也没法和别的 API 区分</td></tr>
+  <tr><td>「新银行架构」</td><td>项目或内部背景</td><td><span class="tag-r">&#10007;</span> 说的是「为什么建它」而不是「它做什么」。项目会结束，API 还在；而且它不会永远「新」</td></tr>
+  <tr><td>「粉红毛绒独角兽」</td><td>没有含义</td><td><span class="tag-r">&#10007;</span> 通常不行（公开 API 的品牌名另当别论）</td></tr>
+  <tr><td>「在线转账」</td><td>有含义，但带了场景</td><td><span class="tag-a">&#9888;</span> 「在线」会限制人们对它的想象 —— 批处理程序也能用它</td></tr>
+  <tr><td>「银行」</td><td>领域</td><td><span class="tag-a">&#9888;</span> 如果它其实只提供账户信息，这个名字就太大了</td></tr>
+  <tr><td>「账户」「转账」「开户申请」</td><td>领域 / 业务概念 / 用例</td><td><span class="tag-g">&#10003;</span> 朴素、简单、名副其实</td></tr>
+</table>
+</div>
+
+<p>起名的技巧沿用第 8 章：简单、有层次、简短。</p>
+
+<h3>把名字放进基础路径</h3>
+
+<p>
+  银行 API 拆成三个之后，路径变成 <code>/account/accounts</code>、<code>/transfer/beneficiaries/{beneficiaryId}</code>、<code>/account-application/partial-account-applications</code>。
+  第一段就是 API 的名字。在 OpenAPI 里，这个前缀不写进 <code>paths</code>，而是通过 <code>servers</code> 定义：
+</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：11. …/Listing 11.1">
+<pre>
+openapi: 3.1.0
+info:
+  title: Account          # API 的名字
+  version: "1.0"
+servers:
+  - url: /account         # 基础路径：是 paths 下所有路径的前缀
+paths:
+  /accounts:              # 实际路径是 /account/accounts
+    get:
+      summary: List accounts
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 110" role="img" aria-label="完整 URL 的组成：服务器、API 名称、资源路径">
+  <text class="mono" x="380" y="46" text-anchor="middle" style="font-size:20px">https://api.bank.com<tspan class="on-a" font-weight="700">/account</tspan><tspan class="on-b">/accounts/{accountId}</tspan></text>
+  <path class="ln-a" d="M386 56 V74"/><text class="lbl on-a" x="386" y="92" text-anchor="middle">API 名称（基础路径）</text>
+  <path class="ln-b" d="M540 56 V74"/><text class="lbl on-b" x="560" y="92" text-anchor="middle">资源路径</text>
+  <text class="sm" x="180" y="92" text-anchor="middle">API 网关常靠基础路径来路由</text>
+</svg>
+<figcaption>图 11-3　基础路径也是放 API 版本号的常见位置（第 15 章）</figcaption>
+</figure>
+
+<h2 id="browse">让 API 可以被「浏览」</h2>
+
+<p>
+  浏览网站时，我们从不需要猜 URL 或猜能做什么。银行网站上一笔转账的页面里，有指向付款账户的超链接；如果这笔转账还能取消，页面上就有一个「取消」按钮。
+  API 也能提供类似的能力，让消费者在<strong>运行时</strong>发现「接下来能做什么」和「相关的东西在哪」，而不是靠文档和猜测。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 超媒体 API、REST 与 HATEOAS</div>
+  <p>
+    <strong>超媒体 API（hypermedia API）</strong>指消费者可以借助超媒体元数据和对 HTTP 的通用理解，动态地与 API 交互。
+    它在 Roy Fielding 定义 REST 的论文里被称为「超媒体作为应用状态的引擎」（Hypermedia As The Engine Of Application State），常被缩写成那个念不出来的词：HATEOAS。
+    它属于 REST 的「统一接口」约束 —— 但现实中很少有 API 真的这么做。值得了解，因为在某些场合它确实有用。
+  </p>
+</div>
+
+<h3>用 OPTIONS 列出资源上可用的操作</h3>
+
+<p>
+  一笔转账（<code>/transfers/{transferId}</code>）可以被读取、修改、取消。但取决于它的状态，后两者不一定可行。
+  <code>OPTIONS</code> 方法让消费者不必取回资源，就能知道当前有哪些方法可用 —— 答案在 <code>Allow</code> 响应头里：
+</p>
+
+<div class="code" data-lang="http">
+<pre>
+OPTIONS /transfers/54321 HTTP/1.1
+
+HTTP/1.1 200 OK
+Allow: GET, DELETE
+</pre>
+</div>
+
+<p>这笔转账可以读、可以取消，但<strong>不能修改</strong>（没有 <code>PUT</code>）。</p>
+
+<h3>用 Link 头提供各种链接</h3>
+
+<p>
+  <code>Link</code> 响应头（RFC 8288，Web Linking）是一个逗号分隔的链接列表。每个链接由尖括号里的 URL、<code>rel</code>（与当前资源的<strong>关系</strong>）和可选的 <code>type</code>（目标的媒体类型）组成。
+</p>
+
+<div class="code" data-lang="http">
+<pre>
+GET /accounts/12345/transactions HTTP/1.1
+
+HTTP/1.1 200 OK
+Link: &lt;/accounts/12345/transactions&gt;;rel="alternate";type="text/csv",
+      &lt;/accounts/12345/transactions&gt;;rel="alternate";type="application/pdf",
+      &lt;/accounts/12345/transactions?page=2&gt;;rel="next"
+
+
+GET /transfers/54321 HTTP/1.1
+
+HTTP/1.1 200 OK
+Link: &lt;/accounts/11111&gt;;rel="source",
+      &lt;/beneficiaries/22222&gt;;rel="destination"
+</pre>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th><code>rel</code></th><th>含义</th></tr>
+  <tr><td><code>alternate</code></td><td>同一个资源的另一种表示（配合 <code>type</code> 说明格式）</td></tr>
+  <tr><td><code>next</code> / <code>prev</code></td><td>分页：下一页 / 上一页</td></tr>
+  <tr><td><code>source</code>、<code>destination</code>……</td><td>任何有业务含义的关系</td></tr>
+</table>
+</div>
+
+<h3>超媒体数据格式</h3>
+
+<p>
+  也可以把链接放进<strong>响应体</strong>。要有效果，就必须用<strong>标准格式</strong> —— 最流行的是 HAL，此外还有 JSON:API、Siren、JSON-LD。对比同一笔转账的三种表示：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 400" role="img" aria-label="同一笔转账的普通 JSON、HAL、Siren 三种表示">
+  <rect class="bx" x="20" y="20" width="200" height="130" rx="10"/>
+  <text class="ttl" x="120" y="42" text-anchor="middle">普通 JSON</text>
+  <text class="mono sm" x="34" y="66">{</text>
+  <text class="mono sm" x="34" y="82">  "id": "12345",</text>
+  <text class="mono sm" x="34" y="98">  "source": "11111",</text>
+  <text class="mono sm" x="34" y="114">  "destination": "22222",</text>
+  <text class="mono sm" x="34" y="130">  "amount": 1000 }</text>
+  <text class="sm" x="120" y="172" text-anchor="middle">消费者自己拼路径：</text>
+  <text class="mono sm" x="120" y="190" text-anchor="middle">/accounts/ + source</text>
+
+  <rect class="bx-b" x="236" y="20" width="250" height="360" rx="10"/>
+  <text class="ttl on-b" x="361" y="42" text-anchor="middle">HAL</text>
+  <text class="mono sm" x="250" y="66">{</text>
+  <text class="mono sm" x="250" y="82">  "id": "12345",</text>
+  <text class="mono sm" x="250" y="98">  "source": "11111",</text>
+  <text class="mono sm" x="250" y="114">  "destination": "22222",</text>
+  <text class="mono sm" x="250" y="130">  "amount": 1000,</text>
+  <text class="mono sm on-b" x="250" y="150" font-weight="700">  "_links": {</text>
+  <text class="mono sm on-b" x="250" y="166">    "self": {</text>
+  <text class="mono sm on-b" x="250" y="182">      "href": "/transfers/12345" },</text>
+  <text class="mono sm on-b" x="250" y="198">    "source": {</text>
+  <text class="mono sm on-b" x="250" y="214">      "href": "/accounts/11111" },</text>
+  <text class="mono sm on-b" x="250" y="230">    "destination": {</text>
+  <text class="mono sm on-b" x="250" y="246">      "href": "/beneficiaries/22222" }</text>
+  <text class="mono sm on-b" x="250" y="262">  }</text>
+  <text class="mono sm" x="250" y="278">}</text>
+  <text class="sm" x="361" y="312" text-anchor="middle">原始数据不变</text>
+  <text class="sm" x="361" y="330" text-anchor="middle">多一个 _links 映射</text>
+  <text class="sm" x="361" y="348" text-anchor="middle">键 = 关系，值里有 href</text>
+  <text class="mono sm" x="361" y="368" text-anchor="middle">application/hal+json</text>
+
+  <rect class="bx-p" x="502" y="20" width="240" height="360" rx="10"/>
+  <text class="ttl on-p" x="622" y="42" text-anchor="middle">Siren</text>
+  <text class="mono sm" x="514" y="62">{ "properties": {</text>
+  <text class="mono sm" x="514" y="78">    "id": "12345",</text>
+  <text class="mono sm" x="514" y="94">    "source": "11111",</text>
+  <text class="mono sm" x="514" y="110">    "destination": "22222",</text>
+  <text class="mono sm" x="514" y="126">    "amount": 1000 },</text>
+  <text class="mono sm on-b" x="514" y="146" font-weight="700">  "links": [</text>
+  <text class="mono sm on-b" x="514" y="162">    { "rel": ["self"], "href": … },</text>
+  <text class="mono sm on-b" x="514" y="178">    { "rel": ["source"], … },</text>
+  <text class="mono sm on-b" x="514" y="194">    { "rel": ["destination"], … }],</text>
+  <text class="mono sm on-p" x="514" y="214" font-weight="700">  "actions": [</text>
+  <text class="mono sm on-p" x="514" y="230">    { "name": "cancel",</text>
+  <text class="mono sm on-p" x="514" y="246">      "method": "DELETE",</text>
+  <text class="mono sm on-p" x="514" y="262">      "href": "/transfers/12345" } ]</text>
+  <text class="mono sm" x="514" y="278">}</text>
+  <text class="sm" x="622" y="312" text-anchor="middle">原始数据被包进 properties</text>
+  <text class="sm" x="622" y="330" text-anchor="middle">还能描述可执行的动作</text>
+  <text class="mono sm" x="622" y="368" text-anchor="middle">application/vnd.siren+json</text>
+</svg>
+<figcaption>图 11-4　HAL 只是在原数据上加链接；Siren 改变了结构，并能说明「现在可以做什么」。分页的 <code>prev</code>/<code>next</code> 也能用同样的机制表达</figcaption>
+</figure>
+
+<p>
+  这些格式各有自己的媒体类型。借助第 9 章的<strong>内容协商</strong>，可以同时提供普通 JSON 和超媒体格式：
+  消费者想要 HAL 就发 <code>Accept: application/hal+json</code>，不发就得到普通 JSON。
+</p>
+
+<h3>实现与使用</h3>
+
+<p>服务端：同一个转账资源，支持 <code>OPTIONS</code>、<code>Link</code> 头，以及通过内容协商返回 HAL。</p>
+
+<div class="tabs" data-title="服务端：OPTIONS + Link + HAL">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi.responses import JSONResponse
+
+app = FastAPI()
+
+def allowed_methods(transfer: dict) -&gt; list[str]:
+    methods = ["GET", "OPTIONS"]
+    if transfer["status"] == "pending":          # 只有待执行的转账才能改、能取消
+        methods += ["PUT", "DELETE"]
+    return methods
+
+@app.options("/transfers/{transfer_id}")
+def transfer_options(transfer_id: str):
+    transfer = store.get(transfer_id) or _not_found()
+    return Response(status_code=200, headers={"Allow": ", ".join(allowed_methods(transfer))})
+
+@app.get("/transfers/{transfer_id}")
+def read_transfer(transfer_id: str, accept: str = Header("application/json")):
+    transfer = store.get(transfer_id) or _not_found()
+
+    data = {
+        "id": transfer["id"],
+        "source": transfer["source"],            # 关键业务数据始终在正文里
+        "destination": transfer["destination"],
+        "amount": transfer["amount"],
+        "cancellable": "DELETE" in allowed_methods(transfer),   # 不要只藏在元数据里
+    }
+    links = {
+        "self": f"/transfers/{transfer['id']}",
+        "source": f"/accounts/{transfer['source']}",
+        "destination": f"/beneficiaries/{transfer['destination']}",
+    }
+    link_header = ", ".join(f'&lt;{href}&gt;;rel="{rel}"' for rel, href in links.items() if rel != "self")
+
+    if "application/hal+json" in accept:         # 内容协商：要 HAL 就给 HAL
+        data["_links"] = {rel: {"href": href} for rel, href in links.items()}
+        return JSONResponse(data, media_type="application/hal+json", headers={"Link": link_header})
+
+    return JSONResponse(data, headers={"Link": link_header})    # 默认：普通 JSON
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+import { Hono } from "hono";
+
+const app = new Hono();
+
+type Transfer = { id: string; source: string; destination: string; amount: number; status: string };
+
+function allowedMethods(transfer: Transfer): string[] {
+  const methods = ["GET", "OPTIONS"];
+  if (transfer.status === "pending") methods.push("PUT", "DELETE");   // 只有待执行的才能改、能取消
+  return methods;
+}
+
+app.options("/transfers/:id", (c) =&gt; {
+  const transfer = store.get(c.req.param("id"));
+  if (!transfer) return c.json({ message: "Transfer not found" }, 404);
+  return c.body(null, 200, { Allow: allowedMethods(transfer).join(", ") });
+});
+
+app.get("/transfers/:id", (c) =&gt; {
+  const transfer = store.get(c.req.param("id"));
+  if (!transfer) return c.json({ message: "Transfer not found" }, 404);
+
+  const data = {
+    id: transfer.id,
+    source: transfer.source,                     // 关键业务数据始终在正文里
+    destination: transfer.destination,
+    amount: transfer.amount,
+    cancellable: allowedMethods(transfer).includes("DELETE"),         // 不要只藏在元数据里
+  };
+  const links: Record&lt;string, string&gt; = {
+    self: `/transfers/${transfer.id}`,
+    source: `/accounts/${transfer.source}`,
+    destination: `/beneficiaries/${transfer.destination}`,
+  };
+  c.header("Link", Object.entries(links)
+    .filter(([rel]) =&gt; rel !== "self")
+    .map(([rel, href]) =&gt; `&lt;${href}&gt;;rel="${rel}"`).join(", "));
+
+  if (c.req.header("Accept")?.includes("application/hal+json")) {     // 内容协商：要 HAL 就给 HAL
+    const _links = Object.fromEntries(Object.entries(links).map(([rel, href]) =&gt; [rel, { href }]));
+    c.header("Content-Type", "application/hal+json");
+    return c.body(JSON.stringify({ ...data, _links }));
+  }
+  return c.json(data);                           // 默认：普通 JSON
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot + Spring HATEOAS">
+<pre>
+// 依赖：spring-boot-starter-hateoas（原生支持 HAL）
+@RestController
+@RequestMapping("/transfers/{id}")
+public class TransferController {
+
+    record TransferData(String id, String source, String destination, BigDecimal amount,
+                        boolean cancellable) {}       // cancellable：关键信息不要只藏在元数据里
+
+    private Set&lt;HttpMethod&gt; allowedMethods(Transfer transfer) {
+        Set&lt;HttpMethod&gt; methods = new LinkedHashSet&lt;&gt;(List.of(HttpMethod.GET, HttpMethod.OPTIONS));
+        if (transfer.isPending()) {                   // 只有待执行的转账才能改、能取消
+            methods.addAll(List.of(HttpMethod.PUT, HttpMethod.DELETE));
+        }
+        return methods;
+    }
+
+    @RequestMapping(method = RequestMethod.OPTIONS)
+    public ResponseEntity&lt;Void&gt; options(@PathVariable String id) {
+        return ResponseEntity.ok().allow(allowedMethods(store.find(id)).toArray(HttpMethod[]::new)).build();
+    }
+
+    // 默认：普通 JSON
+    @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
+    public TransferData read(@PathVariable String id) {
+        Transfer t = store.find(id);
+        return new TransferData(t.id(), t.source(), t.destination(), t.amount(),
+                                allowedMethods(t).contains(HttpMethod.DELETE));
+    }
+
+    // 内容协商：Accept: application/hal+json 时走这个方法，Spring HATEOAS 负责生成 _links
+    @GetMapping(produces = MediaTypes.HAL_JSON_VALUE)
+    public EntityModel&lt;TransferData&gt; readAsHal(@PathVariable String id) {
+        Transfer t = store.find(id);
+        return EntityModel.of(read(id),
+            Link.of("/transfers/" + t.id()).withSelfRel(),
+            Link.of("/accounts/" + t.source()).withRel("source"),
+            Link.of("/beneficiaries/" + t.destination()).withRel("destination"));
+    }
+}
+</pre>
+</div>
+</div>
+
+<p>客户端：不拼路径，而是<strong>跟着链接走</strong>；不猜能不能取消，而是<strong>先问</strong>。</p>
+
+<div class="tabs" data-title="客户端：跟随链接、询问可用操作">
+<div class="code" data-lang="python">
+<pre>
+import httpx
+api = httpx.Client(base_url="https://api.bank.com/transfer")
+
+# 1. 要 HAL 格式
+transfer = api.get("/transfers/54321", headers={"Accept": "application/hal+json"}).json()
+
+# 2. 跟着链接去取付款账户 —— 不需要知道路径怎么拼
+source = api.get(transfer["_links"]["source"]["href"]).json()
+
+# 3. 运行时询问：现在能取消吗？
+allow = api.options(transfer["_links"]["self"]["href"]).headers["Allow"]
+if "DELETE" in allow:
+    api.delete(transfer["_links"]["self"]["href"])
+
+# httpx 还能直接解析 Link 响应头（分页很方便）
+page = api.get("/transfers")
+while page is not None:
+    handle(page.json())
+    next_link = page.links.get("next")            # 解析自 Link: &lt;…&gt;;rel="next"
+    page = api.get(next_link["url"]) if next_link else None
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const base = "https://api.bank.com/transfer";
+
+type HalLinks = { _links: Record&lt;string, { href: string }&gt; };
+type Transfer = { id: string; source: string; amount: number; cancellable: boolean } &amp; HalLinks;
+
+// 1. 要 HAL 格式
+const transfer: Transfer = await (
+  await fetch(`${base}/transfers/54321`, { headers: { Accept: "application/hal+json" } })
+).json();
+
+// 2. 跟着链接去取付款账户 —— 不需要知道路径怎么拼
+const source = await (await fetch(base + transfer._links.source.href)).json();
+
+// 3. 运行时询问：现在能取消吗？
+const options = await fetch(base + transfer._links.self.href, { method: "OPTIONS" });
+if (options.headers.get("Allow")?.includes("DELETE")) {
+  await fetch(base + transfer._links.self.href, { method: "DELETE" });
+}
+
+// 解析 Link 响应头里的 rel="next"（分页）
+function nextUrl(response: Response): string | undefined {
+  const match = response.headers.get("Link")?.match(/&lt;([^&gt;]+)&gt;\s*;\s*rel="next"/);
+  return match?.[1];
+}
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+RestClient api = RestClient.create("https://api.bank.com/transfer");
+
+record Href(String href) {}
+record Transfer(String id, String source, BigDecimal amount, boolean cancellable,
+                @JsonProperty("_links") Map&lt;String, Href&gt; links) {}
+
+// 1. 要 HAL 格式
+Transfer transfer = api.get().uri("/transfers/54321")
+    .accept(MediaType.parseMediaType("application/hal+json"))
+    .retrieve().body(Transfer.class);
+
+// 2. 跟着链接去取付款账户 —— 不需要知道路径怎么拼
+Account source = api.get().uri(transfer.links().get("source").href())
+    .retrieve().body(Account.class);
+
+// 3. 运行时询问：现在能取消吗？
+String self = transfer.links().get("self").href();
+Set&lt;HttpMethod&gt; allowed = api.options().uri(self)
+    .retrieve().toBodilessEntity().getHeaders().getAllow();
+if (allowed.contains(HttpMethod.DELETE)) {
+    api.delete().uri(self).retrieve().toBodilessEntity();
+}
+</pre>
+</div>
+</div>
+
+<h3>关键业务数据不能只藏在元数据里</h3>
+
+<p>
+  注意上面服务端代码里的 <code>cancellable</code> 和 <code>source</code>。即使有了 <code>OPTIONS</code>、<code>Link</code> 和 <code>_links</code>，
+  API 也必须在<strong>忽略这些浏览功能</strong>的情况下照样可用：
+</p>
+
+<div class="tw">
+<table>
+  <tr><th>信息</th><th>可以放在元数据里</th><th>也必须在普通数据里吗</th></tr>
+  <tr><td>这笔转账能否取消</td><td><code>Allow</code> 头、Siren 的 <code>actions</code></td><td><strong>是</strong> —— 关键信息，加一个 <code>cancellable</code> 标志</td></tr>
+  <tr><td>付款账户是哪个</td><td>HAL 的 <code>_links.source</code></td><td><strong>是</strong> —— <code>source</code> 标识符是消费者和用户都需要的基本数据</td></tr>
+  <tr><td>交易列表还支持 CSV、PDF</td><td><code>Link</code> 头的 <code>alternate</code></td><td><strong>否</strong> —— 把它塞进 JSON 正文，等于自创了一种没人会用的超媒体格式</td></tr>
+</table>
+</div>
+
+<h3>要不要做</h3>
+
+<p>
+  超媒体写在 REST 的基因里，功能也强大，但它从未流行起来。和任何技术一样：<strong>真正需要时才用</strong>。
+</p>
+
+<div class="vs">
+  <div class="new">
+    <div class="h">值得考虑的场合</div>
+    <ul style="padding:10px 14px 10px 32px;margin:0;font-size:14.5px">
+      <li>开发者明确想用这些能力</li>
+      <li>有动态的、通用的客户端（配合支持超媒体格式的库，很快就能搭出一个通用的消费端）</li>
+      <li>有 AI 代理在调用：它可以依据运行时返回的数据决定下一步，而不是靠猜</li>
+      <li>预期 API 会拆分或调整路径：消费者用的是返回的链接而不是自己拼的路径，改动对他们透明</li>
+    </ul>
+  </div>
+  <div class="old">
+    <div class="h">不必费心的场合</div>
+    <ul style="padding:10px 14px 10px 32px;margin:0;font-size:14.5px">
+      <li>以上都不成立</li>
+      <li>你或消费者的技术栈里没有合适的客户端/服务端库</li>
+    </ul>
+    <p style="padding:0 14px 10px;margin:0;font-size:14.5px">拿不准也没关系：浏览能力可以<strong>以后</strong>通过内容协商加上，不影响现有消费者。</p>
+  </div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 一致性本身就是一种可发现性</div>
+  <p>正确使用 HTTP、保持数据、操作和流程的一致与标准，消费者（包括 AI）就已经能「猜」出大部分东西了。超媒体是锦上添花，一致性才是地基。</p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>好用、可互操作的 API 使用好用的数据、操作和流程，并且目的清晰、聚焦；还可以帮助消费者在运行时发现可用的操作和关系。</li>
+  <li>单个 API 也许能满足需求，但可能难以理解。优化完流程后，评估需要一个还是多个 API。</li>
+  <li>通过识别相互独立的操作集合及其关联来决定如何拆分。子领域之间不总是泾渭分明，它们可以通过可互操作的标识符相联系。</li>
+  <li>API 的名字划定边界、说明用途。聚焦于领域、业务概念或用例；避免泛泛的、与项目或背景相关的、没有含义的名字。</li>
+  <li>可以把 API 名字放进基础路径（OpenAPI 的 <code>servers</code>）。</li>
+  <li>用 <code>OPTIONS</code> 方法让消费者不必取回资源就知道哪些方法可用。</li>
+  <li>用 <code>Link</code> 头在 <code>GET</code> 响应中提供分页、格式和资源链接。</li>
+  <li>用标准的超媒体格式（如 HAL、Siren）提供可互操作的导航元数据，并通过内容协商与普通 JSON 并存。</li>
+  <li>关键的业务数据不能只存在于超媒体元数据里。</li>
+  <li>只在真正需要时才提供浏览能力 —— 典型场景是有动态的或 AI 驱动的消费端。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      一所大学识别出了这些操作：课程的搜索/创建/读取/更新/取消；学生选课、退课、查看选课名单；设置和列出考试；学生的增改删查；录入成绩、查询成绩；员工请假的新增/修改/查询；列出员工。它们适合放在一个 API 里吗？
+      <details class="ans"><summary>参考答案</summary>
+        不适合。按流程连接后至少有两个完全不相干的集合：<strong>教务</strong>和<strong>人事</strong>（员工、请假）—— 后者和教学没有任何流程上的联系，应独立成一个 API。
+        教务部分还可以再看：<em>课程管理</em>（课程 CRUD）、<em>学生管理</em>（学生 CRUD）、<em>选课</em>（选课/退课/名单）、<em>考试与成绩</em>。它们通过可互操作的 <code>courseId</code>、<code>studentId</code> 相关联，可以拆成几个 API，也可以先合为一个「教务 API」，等规模变大再拆。
+        顺带一提，原设计里「列出员工请假」写成了 <code>POST</code>，应为 <code>GET</code>。
+      </details>
+    </li>
+    <li>
+      PAX 公司发起了重建内部系统的「ReGenesis」计划，刚重构完的「Zeus」应用可以：计算订单运费、生成运单、发货、追踪物流。给它的私有 API 起名，评估「Zeus API」「Logistics API」「ReGenesis Shipment API」。
+      <details class="ans"><summary>参考答案</summary>
+        <strong>Zeus API</strong>：应用的内部代号，没有含义，外人不知道它做什么。
+        <strong>ReGenesis Shipment API</strong>：带了项目名，项目结束后名字就过时了；不过 Shipment 部分是对的。
+        <strong>Logistics API</strong>：有含义，但范围太大 —— 物流还包括仓储、库存、退货等，而它只管发货。
+        更好的名字：<strong>Shipment API</strong>（或 Order Shipment API），准确描述了它提供的能力。
+      </details>
+    </li>
+    <li>挑一个你用过的公开 API，看看它的响应头里有没有 <code>Link</code>（GitHub 的列表接口就有）。用本章的客户端代码把所有页面翻一遍。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

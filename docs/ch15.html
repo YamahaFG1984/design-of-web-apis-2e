@@ -1,0 +1,864 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 15 章 · 修改 API — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="15">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 15 章</span>
+<h1>修改 API</h1>
+<p class="lede">
+  购物公司想让商品支持多个分类，于是打算把字符串属性 <code>category</code> 换成数组 <code>categories</code>。
+  这意味着所有调用方都得改代码；没改的会因为找不到 <code>category</code> 而崩溃。内部应用好说，要求所有合作方配合就难了。
+  更糟的是悄悄上线、谁都没通知。API 一旦被使用就很少一成不变 —— 这一章讲如何改得不伤人，以及如何从一开始就设计得<strong>经得起改</strong>。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>分清破坏性修改和向后兼容的修改：输出、输入、路径、方法、状态码、流程</li>
+    <li>知道「看不见的契约」，以及如何防止意外的修改</li>
+    <li>识别安全方面的破坏性修改</li>
+    <li>为 API 选择版本号方案和它在请求中的表示方式</li>
+    <li>权衡破坏性修改的影响与收益</li>
+    <li>掌握可扩展的设计模式</li>
+    <li>用 OpenAPI 记录版本、弃用和变更日志</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="overview">修改 API 时会发生什么</h2>
+
+<p>
+  修改 API 就是「照常设计」：识别新的或变化的能力，设计接口，保证好用、安全、高效、适配上下文。
+  但多了一层约束：<strong>修改可能破坏已有的消费者</strong>。
+</p>
+
+<p>
+  假设要给购物 API 加上多币种支持。漂亮的做法是把数字类型的 <code>price</code> 换成带 <code>value</code> 和 <code>currency</code> 的对象。
+  草率上线的后果：读商品的消费者崩溃（期望数字，拿到对象）；加商品的消费者被拒绝（服务端期望对象，收到数字）。应对的选择有三个：
+</p>
+
+<div class="cards">
+  <div class="card"><h4>同步发布</h4><p>只有一个内部消费者时，让它的更新和新 API 一起上线。合作方一多就行不通。</p></div>
+  <div class="card"><h4>新旧版本并行</h4><p>同时暴露两个版本，让消费者按自己的节奏迁移。代价是要维护两套。</p></div>
+  <div class="card"><h4>改成向后兼容的设计</h4><p>保留 <code>price</code> 不动，新增一个带默认值的 <code>priceCurrency</code>。没那么优雅，但谁都不受影响。</p></div>
+</div>
+
+<p>更好的初始设计本可以避免这次取舍。这很让人沮丧，但要学会接受：用的人越多、场景越多，就会发现越多问题。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="修改 API 的流程：创建时定版本策略并做可扩展的设计，修改时照常设计、列出修改并评估影响、避免或接受破坏性修改、更新版本号和变更日志">
+  <text class="ttl" x="20" y="22">创建 API 时</text>
+  <rect class="bx-p" x="20" y="34" width="150" height="62" rx="10"/>
+  <text class="ttl on-p" x="95" y="58" text-anchor="middle">定版本策略</text>
+  <text class="sm" x="95" y="78" text-anchor="middle">产品负责人 + 架构师</text>
+  <rect class="bx-g" x="186" y="34" width="150" height="62" rx="10"/>
+  <text class="ttl on-g" x="261" y="58" text-anchor="middle">可扩展的初始设计</text>
+  <text class="sm" x="261" y="78" text-anchor="middle">为将来的修改铺路</text>
+  <path class="ln" d="M170 65 H184" marker-end="url(#ar)"/>
+
+  <text class="ttl" x="20" y="126">修改 API 时</text>
+  <rect class="bx" x="20" y="138" width="150" height="50" rx="10"/>
+  <text x="95" y="160" text-anchor="middle">识别能力、设计接口</text>
+  <text class="sm" x="95" y="178" text-anchor="middle">照常设计</text>
+  <rect class="bx-a" x="198" y="138" width="170" height="50" rx="10"/>
+  <text class="on-a" x="283" y="160" text-anchor="middle" font-weight="700">列出全部修改</text>
+  <text class="sm" x="283" y="178" text-anchor="middle">逐项评估影响</text>
+  <rect class="bx-a" x="396" y="138" width="170" height="50" rx="10"/>
+  <text class="on-a" x="481" y="160" text-anchor="middle" font-weight="700">不值得就做取舍</text>
+  <text class="sm" x="481" y="178" text-anchor="middle">避免破坏性修改</text>
+  <rect class="bx" x="594" y="138" width="146" height="50" rx="10"/>
+  <text x="667" y="160" text-anchor="middle">更新版本号</text>
+  <text class="sm" x="667" y="178" text-anchor="middle">写变更日志</text>
+  <path class="ln" d="M170 163 H196" marker-end="url(#ar)"/>
+  <path class="ln-a" d="M368 163 H394" marker-end="url(#ar-a)"/>
+  <path class="ln" d="M566 163 H592" marker-end="url(#ar)"/>
+  <path class="ln-d" d="M481 138 C460 110 320 110 290 138" marker-end="url(#ar)"/>
+  <text class="sm" x="386" y="112" text-anchor="middle">调整设计后重新评估</text>
+</svg>
+<figcaption>图 15-1　对修改的处理从创建 API 那天就开始了</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 适用于任何 API</div>
+  <p>无论它是公开的还是私有的，是庞大的单体还是小小的微服务，是 REST 还是别的类型 —— 修改都必须谨慎。</p>
+</div>
+
+<h2 id="breaking">破坏性修改 vs 向后兼容的修改</h2>
+
+<p>
+  <strong>破坏性修改（breaking change）</strong>是指消费者必须改代码才能继续使用 API 的修改。它可能导致明显的报错，也可能导致更可怕的<strong>静默错误</strong> ——
+  没改的代码照样能处理变了的数据，只是结果不对。
+</p>
+
+<h3>修改输出</h3>
+
+<p>消费者的代码要<em>读</em>这些数据。<strong>规则：只能增加，或者在原有范围之内调整。</strong>对成功响应和错误响应、响应头和响应体都适用。</p>
+
+<div class="tw">
+<table>
+  <tr><th><span class="tag-r">破坏性</span></th><th><span class="tag-g">向后兼容</span></th></tr>
+  <tr><td>重命名数据（<code>amt</code> → <code>amount</code>）</td><td>新增数据</td></tr>
+  <tr><td>移动数据（<code>merchantName</code> 挪进 <code>merchant</code> 对象）</td><td>把可选数据变成必返</td></tr>
+  <tr><td>删除必返的数据</td><td>删除可选数据（消费者本来就得处理它不存在的情况）</td></tr>
+  <tr><td>把必返的数据变成可选</td><td>缩短字符串的最大长度</td></tr>
+  <tr><td>改变类型（数字 → 字符串）</td><td></td></tr>
+  <tr><td>改变格式（时间戳 → ISO 8601）</td><td></td></tr>
+  <tr><td>改变含义（分 → 元）</td><td></td></tr>
+  <tr><td><strong>给枚举增加取值</strong></td><td></td></tr>
+  <tr><td><strong>增大字符串的最大长度</strong>（消费者的数据库列可能就是按原长度建的）</td><td></td></tr>
+</table>
+</div>
+
+<p>
+  错误响应同理：把错误列表从 <code>items</code> 改名为 <code>errors</code>，消费者可能崩溃，也可能<strong>看不到错误</strong>；
+  把具体的类型 <code>MISSING_SOURCE</code> 换成通用的 <code>REQUIRED</code>，依赖旧值的代码会失效。响应头也一样：一直返回的 <code>Location</code> 突然不返回了，就是破坏。
+</p>
+
+<h3>修改输入</h3>
+
+<p>
+  没更新的消费者会按<em>旧版</em>的定义<em>发</em>数据。<strong>规则：只能放宽。</strong>把必填变可选、新增可选项、扩大允许的范围。
+  对请求体、请求头、查询参数、路径参数都适用。
+</p>
+
+<div class="tw">
+<table>
+  <tr><th><span class="tag-r">破坏性</span></th><th><span class="tag-g">向后兼容</span></th></tr>
+  <tr><td>新增必填数据</td><td>新增可选数据（它内部可以有必填项 —— 旧消费者根本不会发它）</td></tr>
+  <tr><td>把可选数据变成必填</td><td>把必填数据变成可选</td></tr>
+  <tr><td>重命名、移动数据</td><td>删除数据（旧消费者还会发，服务端忽略即可 —— 第 9 章的「宽进」）</td></tr>
+  <tr><td>改变类型、格式、含义</td><td></td></tr>
+  <tr><td>收紧数值范围（提高下限、降低上限）</td><td>放宽数值范围</td></tr>
+  <tr><td>收紧字符串长度</td><td>放宽字符串长度</td></tr>
+  <tr><td><strong>从枚举里删除取值</strong></td><td><strong>给枚举增加取值</strong></td></tr>
+</table>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="同一种修改在输入和输出上的兼容性正好相反">
+  <rect class="bx-b" x="20" y="30" width="160" height="150" rx="12"/>
+  <text class="ttl on-b" x="100" y="100" text-anchor="middle">没更新的</text>
+  <text class="ttl on-b" x="100" y="120" text-anchor="middle">消费者</text>
+
+  <rect class="bx-a" x="580" y="30" width="160" height="150" rx="12"/>
+  <text class="ttl on-a" x="660" y="100" text-anchor="middle">更新后的</text>
+  <text class="ttl on-a" x="660" y="120" text-anchor="middle">API</text>
+
+  <path class="ln-b" d="M180 70 H578" marker-end="url(#ar-b)"/>
+  <text class="ttl" x="380" y="52" text-anchor="middle">输入：消费者按旧规则发</text>
+  <text class="sm on-g" x="380" y="88" text-anchor="middle">API 接受得<tspan font-weight="700">更多</tspan> → 兼容　（加枚举值、放宽范围、必填变可选）</text>
+  <text class="sm on-r" x="380" y="106" text-anchor="middle">API 接受得<tspan font-weight="700">更少</tspan> → 破坏　（删枚举值、收紧范围、可选变必填）</text>
+
+  <path class="ln-a" d="M578 150 H182" marker-end="url(#ar-a)"/>
+  <text class="ttl" x="380" y="140" text-anchor="middle">输出：消费者按旧规则读</text>
+  <text class="sm on-g" x="380" y="170" text-anchor="middle">API 返回的<tspan font-weight="700">仍在旧范围内</tspan> → 兼容　（可选变必返、缩短长度）</text>
+  <text class="sm on-r" x="380" y="188" text-anchor="middle">API 返回了<tspan font-weight="700">旧范围之外的东西</tspan> → 破坏　（加枚举值、增大长度、必返变可选）</text>
+</svg>
+<figcaption>图 15-2　记忆要点：输入只能放宽，输出只能收紧。同一种修改（比如给枚举加一个值）在两个方向上的后果正好相反</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 最危险的是「不报错」的破坏</div>
+  <ul>
+    <li><strong>改变输入值的含义。</strong>服务端把金额从「分」改成「元」，没更新的消费者发来 1000（分），服务端按 1000 <em>元</em>转了出去。</li>
+    <li><strong>改参数名。</strong>把 <code>pageIndex</code> 改名为 <code>page</code>：调用 <code>?pageIndex=2</code> 的消费者不会报错，只是永远拿到第一页。</li>
+    <li><strong>加分页或减小页大小。</strong>消费者拿到的数据变少了，却可能毫无察觉。</li>
+    <li><strong>把 <code>If-Match</code> 设为必填</strong>（第 12 章）：所有没更新的消费者都无法再做任何修改。</li>
+  </ul>
+</div>
+
+<h3>修改路径、操作、状态码、流程</h3>
+
+<div class="tw">
+<table>
+  <tr><th>修改</th><th><span class="tag-r">破坏性</span></th><th><span class="tag-g">向后兼容</span></th></tr>
+  <tr>
+    <td>路径</td>
+    <td><code>/transaction</code> → <code>/transactions</code>；改变层级结构 → <code>404</code>。（可以用 <code>308 Permanent Redirect</code> 缓解，但消费者常常没配置跟随重定向）</td>
+    <td>改路径参数的<em>名字</em>（它不出现在请求里）；让路径参数接受更多种值（账号或 IBAN 都行）</td>
+  </tr>
+  <tr>
+    <td>枚举型路径参数</td>
+    <td>删除或改名（<code>office</code> → <code>professional</code>）→ <code>404</code></td>
+    <td>新增取值（<code>vacation</code>）</td>
+  </tr>
+  <tr>
+    <td>操作 / HTTP 方法</td>
+    <td>删除操作；把 <code>PATCH</code> 换成 <code>PUT</code> → <code>405 Method Not Allowed</code> 或 <code>404</code></td>
+    <td>新增操作（旧消费者不会调它）</td>
+  </tr>
+  <tr>
+    <td>状态码</td>
+    <td>把一个状态码换成同类的另一个（<code>200</code> → <code>201</code>、<code>400</code> → <code>422</code>）；新增状态码</td>
+    <td>不再返回某个状态码（比如消除了夜间维护，就不再有 <code>503</code>）</td>
+  </tr>
+  <tr>
+    <td>操作流</td>
+    <td>在流程里加一步（转账后新增「用短信验证码确认」）—— 旧消费者以为转完了，其实没有，而且<strong>没有任何报错</strong></td>
+    <td></td>
+  </tr>
+</table>
+</div>
+
+<p>
+  为什么 <code>200</code> 改成 <code>201</code> 也算破坏？HTTP 规范说客户端应该按<em>类别</em>处理不认识的状态码，但现实中消费者的代码常常写成 <code>if (response.status !== 200)</code>。
+</p>
+
+<h3>看不见的契约</h3>
+
+<div class="box deep">
+  <div class="t">&#128218; 海勒姆定律（Hyrum's Law）</div>
+  <p>「当一个 API 有足够多的用户时，你在契约里承诺了什么已经不重要：系统所有可被观察到的行为，都会有人依赖。」</p>
+</div>
+
+<ul>
+  <li>有消费者靠<strong>数组里的位置</strong>而不是地址类型来取户主的家庭住址。哪天数组顺序变了，他就拿到了错的地址。我们从未承诺过顺序，按类型查才是对的 —— 这次是他的问题。</li>
+  <li>限流由 API 网关处理，所以银行 API 的文档里没写 <code>429</code>（「网关不归我们管」）。但 <code>429</code> 响应的格式一变，消费者照样崩溃 —— 这次是<strong>我们的</strong>问题。合作方和公众不关心它在你们组织里归哪个团队。</li>
+  <li><strong>响应时间</strong>也是契约的一部分：新加的业务逻辑让某个操作变慢，可能触发消费者的超时。</li>
+</ul>
+
+<h3>防止意外的修改</h3>
+<p>
+  每次修改都<strong>对比新旧两版 OpenAPI 文档</strong>，确保所有改动都被列出并评估过。普通的文本 diff 不够用（文档结构重排了但接口没变，它也会报一大堆差异），
+  要用专门的 <strong>OpenAPI diff 工具</strong> —— 它们能指出哪些是安全的、哪些是破坏性的，还能接入 CI/CD，发现意外的破坏就阻止部署。
+  （在 <a href="https://tools.openapis.org/">tools.openapis.org</a> 搜「diff」。）
+</p>
+<p>
+  但这类工具看不到文档之外的东西：响应的行为、看不见的契约。所以还要以 OpenAPI 文档为准绳，对实现做充分的测试。
+</p>
+
+<h3>在消费者一侧：宽容的读取</h3>
+
+<p>
+  理解了上面这些，也就知道怎么写出<strong>不容易被破坏</strong>的客户端代码。提供者无法强求消费者这样写，但如果你自己就是消费者，值得这么做：
+</p>
+
+<div class="tabs" data-title="脆弱的消费者 vs 宽容的消费者">
+<div class="code" data-lang="python">
+<pre>
+import httpx
+
+r = httpx.post(f"{base}/transfers", json=transfer)
+
+# ✗ 脆弱：只认 200。提供者把它改成更准确的 201，这里就炸了
+if r.status_code != 200:
+    raise RuntimeError("Transfer failed")
+
+# ✓ 宽容：按类别判断
+if not r.is_success:                      # 任何 2XX 都算成功
+    handle_error(r)
+
+
+data = r.json()
+
+# ✗ 脆弱：未知的枚举值直接崩溃
+LABELS = {"executed": "已执行", "delayed": "已预约"}
+label = LABELS[data["status"]]            # 提供者新增了 "cancelled" → KeyError
+
+# ✓ 宽容：未知值有兜底
+label = LABELS.get(data["status"], "处理中")
+
+# ✗ 脆弱：依赖没人承诺过的顺序
+home = owner["addresses"][0]
+
+# ✓ 宽容：按契约里明确的属性去找
+home = next((a for a in owner["addresses"] if a["type"] == "home"), None)
+
+# ✓ 用 Pydantic 解析时：忽略不认识的属性（默认行为），而不是 extra="forbid"
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const response = await fetch(`${base}/transfers`, { method: "POST", body: JSON.stringify(transfer) });
+
+// ✗ 脆弱：只认 200。提供者把它改成更准确的 201，这里就炸了
+if (response.status !== 200) throw new Error("Transfer failed");
+
+// ✓ 宽容：按类别判断
+if (!response.ok) await handleError(response);        // response.ok === 任何 2XX
+
+
+const data = await response.json();
+
+// ✗ 脆弱：未知的枚举值让界面显示 undefined，或者落进抛异常的 default 分支
+const LABELS: Record&lt;string, string&gt; = { executed: "已执行", delayed: "已预约" };
+const label1 = LABELS[data.status];                   // 提供者新增了 "cancelled" → undefined
+
+// ✓ 宽容：未知值有兜底
+const label2 = LABELS[data.status] ?? "处理中";
+
+// ✗ 脆弱：依赖没人承诺过的顺序
+const home1 = owner.addresses[0];
+
+// ✓ 宽容：按契约里明确的属性去找
+const home2 = owner.addresses.find((a: Address) =&gt; a.type === "home");
+
+// ✓ 用 Zod 校验响应时：z.object() 默认会丢弃不认识的属性；别用 .strict()
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// ✓ 宽容：让 Jackson 忽略不认识的属性 —— 提供者新增字段不会让反序列化失败
+@JsonIgnoreProperties(ignoreUnknown = true)
+record Transfer(String id, TransferStatus status, BigDecimal amount) {}
+
+// ✓ 宽容：未知的枚举值映射到一个兜底值，而不是抛异常
+enum TransferStatus {
+    executed, delayed,
+    @JsonEnumDefaultValue unknown        // 需开启 READ_UNKNOWN_ENUM_VALUES_USING_DEFAULT_VALUE
+}
+
+ResponseEntity&lt;Transfer&gt; response = api.post().uri("/transfers")
+    .body(transfer).retrieve().toEntity(Transfer.class);
+
+// ✗ 脆弱：只认 200。提供者把它改成更准确的 201，这里就炸了
+if (response.getStatusCode().value() != 200) throw new IllegalStateException("Transfer failed");
+
+// ✓ 宽容：按类别判断
+if (!response.getStatusCode().is2xxSuccessful()) handleError(response);
+
+// ✗ 脆弱：依赖没人承诺过的顺序
+Address home1 = owner.addresses().get(0);
+
+// ✓ 宽容：按契约里明确的属性去找
+Optional&lt;Address&gt; home2 = owner.addresses().stream()
+    .filter(a -&gt; a.type().equals("home")).findFirst();
+</pre>
+</div>
+</div>
+
+<h3>安全方面的修改</h3>
+
+<div class="tw">
+<table>
+  <tr><th>修改</th><th>后果</th><th>怎么办</th></tr>
+  <tr><td>替换或移除安全方案（把 API Key 换成双向 TLS）</td><td>破坏性，但为了安全往往<strong>无法避免</strong></td><td>过渡期内两种方式并存，让消费者切换</td></tr>
+  <tr><td>把操作从一个作用域挪到另一个（「列出转账」从 <code>account:all</code> 挪到 <code>transfer:read</code>）</td><td>破坏性：消费者认证时要声明用哪些作用域</td><td>先加到新作用域，等消费者都更新了再从旧的里移除</td></tr>
+  <tr><td>往现有作用域里加操作（把「删除账户」加进 <code>user:account:all</code>）</td><td>不破坏消费者，但可能<strong>制造安全漏洞</strong>：面向户主的应用突然能调用管理员操作了</td><td>按第 12 章的原则重新审视</td></tr>
+</table>
+</div>
+
+<h2 id="version">给 API 一个版本号</h2>
+
+<p>
+  版本控制不只是挑一个名字或数字。它是一套<strong>策略</strong>：什么时候、怎样做修改；如何处理破坏性修改；同时支持几个旧版本、各支持多久。
+  这些由产品负责人和架构师决定，但会约束我们的设计。
+</p>
+
+<h3>接口的版本 ≠ 实现的版本</h3>
+
+<p>我们版本化的是<strong>消费者看得到的东西</strong> —— 接口契约，而不是实现代码。</p>
+
+<div class="tw">
+<table>
+  <tr><th>修改</th><th>API 版本</th><th>实现版本</th></tr>
+  <tr><td>初始版本：账户信息相关的操作</td><td>v1</td><td>v1</td></tr>
+  <tr><td>修复了一个访问控制的 Bug</td><td>v1（接口没变）</td><td><strong>v2</strong></td></tr>
+  <tr><td>新增转账相关的操作</td><td><strong>v2</strong></td><td><strong>v3</strong></td></tr>
+  <tr><td>重构转账的内部实现（改用消息队列）</td><td>v2（接口没变）</td><td><strong>v4</strong></td></tr>
+  <tr><td>新增开户申请相关的操作</td><td><strong>v3</strong></td><td><strong>v5</strong></td></tr>
+</table>
+</div>
+
+<h3>版本标识符：语义化版本 vs 日期</h3>
+
+<div class="tw">
+<table>
+  <tr><th>修改</th><th>类型</th><th>语义化版本</th><th>日期版本</th></tr>
+  <tr><td>初始版本：列出账户、读取账户</td><td></td><td><code>1.0</code></td><td><code>2023-10-02</code></td></tr>
+  <tr><td>新增「列出交易」</td><td><span class="tag-g">兼容</span></td><td><code>1.1</code></td><td><code>2023-11-06</code></td></tr>
+  <tr><td>交易里新增商户名称和地址</td><td><span class="tag-g">兼容</span></td><td><code>1.2</code></td><td><code>2024-01-08</code></td></tr>
+  <tr><td>路径里的账号换成 IBAN</td><td><span class="tag-r">破坏</span></td><td><code>2.0</code></td><td><code>2024-02-05</code></td></tr>
+  <tr><td>读取账户不再返回银行卡列表</td><td><span class="tag-r">破坏</span></td><td><code>3.0</code></td><td><code>2024-03-04</code></td></tr>
+</table>
+</div>
+
+<ul>
+  <li>
+    <strong><a href="https://semver.org/">语义化版本</a></strong>的完整形式是 <code>主版本.次版本.补丁</code>。破坏性修改递增<strong>主版本</strong>，兼容的修改递增<strong>次版本</strong>。
+    API 的版本不用补丁号 —— 那是给 Bug 修复用的，而 Bug 修复只发生在实现里。所以 API 版本是 <code>1.0</code>、<code>1.2</code> 这样的两段。
+  </li>
+  <li><strong>日期版本</strong>能看出哪个更新，但看不出改动的性质，必须去查文档。</li>
+</ul>
+
+<p><strong>默认推荐语义化版本</strong>：它直接说明了改动的类型，也最通行。如果发布频繁或有固定节奏（比如每季度），可以考虑日期版本。</p>
+
+<h3>版本在请求里怎么表示</h3>
+
+<div class="tw">
+<table>
+  <tr><th>位置</th><th>示例</th><th>评价</th></tr>
+  <tr><td><strong>路径</strong></td><td><code>GET /v2/accounts</code>、<code>/banking/v2/accounts</code></td><td><span class="tag-g">默认推荐</span> 实现和使用都最简单，所以也最常见。只放主版本（2.1 对 2.0 是兼容的，不需要区分）</td></tr>
+  <tr><td>自定义请求头</td><td><code>Version: 2</code></td><td>可以考虑。但开发者经常忘了带，然后花很久排查为什么结果不对</td></tr>
+  <tr><td>自定义媒体类型</td><td><code>Accept: application/vnd.bnk.v2+json</code></td><td>可以，但限制了内容协商（想要 PDF 格式的 v2 怎么办？），实现也更复杂</td></tr>
+  <tr><td>媒体类型参数</td><td><code>Accept: application/json;version=2</code></td><td>罕见</td></tr>
+  <tr><td>域名</td><td><code>api-v2.bnk.com</code></td><td>罕见</td></tr>
+  <tr><td>查询参数</td><td><code>GET /accounts?type=current&amp;version=2</code></td><td><span class="tag-r">不推荐</span> 把业务数据（筛选条件）和元数据（版本）混在了一起</td></tr>
+  <tr><td>消费者配置（带外）</td><td>请求里不带版本，由提供者按消费者的配置决定</td><td>适合承诺长期支持很多旧版本的公开 API；应同时允许在请求里显式指定</td></tr>
+</table>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 从第一天就定下来</div>
+  <p>
+    不要等到第一次破坏性修改才决定版本方案。一开始就定好，消费者知道将来会怎样，过渡也更顺。
+    这不意味着你一定会改版本号 —— 路径里的 <code>/v1</code> 可能永远是 <code>/v1</code>。而且这通常不是每个 API 各自决定的，而是整个团队或组织共用的策略。
+  </p>
+</div>
+
+<h3>不要对 API 的局部做版本控制</h3>
+<p>
+  技术上可以只给某个资源或某个操作升版本（<code>/v2/transfers</code>、<code>/v3/transfers</code>、<code>/v1/sources</code>、<code>/v2/sources/{id}/destinations</code>……）。
+  <strong>别这么做。</strong>完成一次转账要依次调用付款方、收款方、转账三个资源上的操作 —— 消费者（和你自己）怎么知道各资源的哪个版本能搭配使用？
+  这种想法通常源于把「资源」和「API」混为一谈，或者 API 太大、该拆分了（第 11 章）。
+</p>
+
+<h2 id="careful">谨慎地做破坏性修改</h2>
+
+<p>从 1.1 升到 1.2 没有后果；升到 2.0 则必须权衡。用五个问题来评估：</p>
+
+<ol>
+  <li>
+    <strong>有多少消费者受影响？他们是谁？</strong>
+    只有自己团队的一个应用：好办。几十个内部应用：要花组织很多钱和时间。只有两个合作方：数量不多，但他们是<strong>客户</strong>。
+  </li>
+  <li>
+    <strong>消费者真的在用我们要破坏的东西吗？</strong>
+    看<em>作用域</em>（没有相关作用域的肯定不受影响）；看<em>日志</em>（有作用域不代表真的在调 —— 但注意日志保留期：只在 12 月被大量使用的年度统计操作，在 11 月的六个月日志里看不到）；
+    实在不行只能请消费者<em>查代码</em>（日志不会告诉你消费者怎么使用响应体里的数据）—— 这对合作伙伴和公开 API 基本不可能。
+  </li>
+  <li>
+    <strong>能同时暴露多个版本吗？</strong>
+    两种方式：每个版本一套实例（成本高，而且 v2 改了数据库结构后 v1 的实例可能根本跑不了）；或者<strong>一套实例支持多个版本</strong>（推荐）——
+    用适配器把 v1 的请求转成 v2 的、处理完再把 v2 的响应转回 v1 的。但版本多了、改动大了，适配器也会变复杂，有些转换甚至做不到。
+  </li>
+  <li>
+    <strong>版本策略有什么约束？</strong>
+    比如「支持最近两个主版本；破坏性修改每年一次；季度发布只能含兼容的修改」。
+  </li>
+  <li>
+    <strong>破坏性修改的目的是什么？</strong>
+    合作方强烈要求多币种支持 → 值得：让现有客户满意，吸引新客户，带来收入。
+    只是想把「读取本年度看板」换成设计更好的「读取年度看板」→ 不值得：保留旧操作，新增一个更好的。
+  </li>
+</ol>
+
+<h3>一套实例支持多个版本</h3>
+
+<p>
+  下面演示「适配器」的思路：实现只有一份（按 v2 的模型工作），v1 的路由在入口和出口各做一次转换。同时给 v1 的响应加上 <code>Sunset</code> 头（RFC 8594），预告它将在何时下线：
+</p>
+
+<div class="tabs" data-title="v1 适配器 + Sunset 头">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+from fastapi import APIRouter, FastAPI, Response
+
+app = FastAPI()
+v1 = APIRouter(prefix="/banking/v1")
+v2 = APIRouter(prefix="/banking/v2")
+
+# ---- v2：当前的模型。price 是带币种的对象 ----
+@v2.get("/products/{product_id}")
+def read_product_v2(product_id: str) -&gt; dict:
+    return products.get(product_id)
+    # {"id": "p1", "name": "...", "price": {"value": 49.99, "currency": "USD"}, "categories": ["BD"]}
+
+# ---- v1：适配器。复用 v2 的实现，把结果转换成旧的形状 ----
+def to_v1(product: dict) -&gt; dict:
+    return {
+        "id": product["id"],
+        "name": product["name"],
+        "price": product["price"]["value"],          # v1 里 price 是数字
+        "category": product["categories"][0],        # v1 里只有一个分类
+    }
+    # 注意：非 USD 的商品没法无损地表达成 v1 —— 有些转换是做不到的
+
+@v1.get("/products/{product_id}")
+def read_product_v1(product_id: str, response: Response) -&gt; dict:
+    # 预告旧版本的下线时间；也可以加 Link 头指向迁移指南
+    response.headers["Sunset"] = "Sat, 31 Aug 2024 23:59:59 GMT"
+    response.headers["Link"] = '&lt;https://developer.shopp.ing/migrate-to-v2&gt;;rel="sunset"'
+    return to_v1(read_product_v2(product_id))
+
+app.include_router(v1)
+app.include_router(v2)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+import { Hono } from "hono";
+
+type ProductV2 = {
+  id: string; name: string;
+  price: { value: number; currency: string };     // v2：带币种的对象
+  categories: string[];                           // v2：多个分类
+};
+type ProductV1 = { id: string; name: string; price: number; category: string };
+
+// ---- v2：当前的模型 ----
+const v2 = new Hono();
+v2.get("/products/:productId", (c) =&gt; c.json(products.get(c.req.param("productId"))));
+
+// ---- v1：适配器。复用同一份实现，把结果转换成旧的形状 ----
+const toV1 = (p: ProductV2): ProductV1 =&gt; ({
+  id: p.id,
+  name: p.name,
+  price: p.price.value,                           // v1 里 price 是数字
+  category: p.categories[0],                      // v1 里只有一个分类
+});
+// 注意：非 USD 的商品没法无损地表达成 v1 —— 有些转换是做不到的
+
+const v1 = new Hono();
+v1.use("*", async (c, next) =&gt; {
+  await next();
+  // 预告旧版本的下线时间；也可以加 Link 头指向迁移指南
+  c.header("Sunset", "Sat, 31 Aug 2024 23:59:59 GMT");
+  c.header("Link", '&lt;https://developer.shopp.ing/migrate-to-v2&gt;;rel="sunset"');
+});
+v1.get("/products/:productId", (c) =&gt; c.json(toV1(products.get(c.req.param("productId")))));
+
+const app = new Hono();
+app.route("/banking/v1", v1);
+app.route("/banking/v2", v2);
+export default app;
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+record Price(BigDecimal value, String currency) {}
+record ProductV2(String id, String name, Price price, List&lt;String&gt; categories) {}   // 当前的模型
+record ProductV1(String id, String name, BigDecimal price, String category) {       // 旧的形状
+    static ProductV1 from(ProductV2 p) {
+        // 注意：非 USD 的商品没法无损地表达成 v1 —— 有些转换是做不到的
+        return new ProductV1(p.id(), p.name(), p.price().value(), p.categories().get(0));
+    }
+}
+
+// ---- v2 ----
+@RestController
+@RequestMapping("/banking/v2/products")
+class ProductControllerV2 {
+    @GetMapping("/{productId}")
+    ProductV2 read(@PathVariable String productId) {
+        return products.get(productId);
+    }
+}
+
+// ---- v1：适配器。复用同一份实现，把结果转换成旧的形状 ----
+@RestController
+@RequestMapping("/banking/v1/products")
+class ProductControllerV1 {
+    @GetMapping("/{productId}")
+    ResponseEntity&lt;ProductV1&gt; read(@PathVariable String productId) {
+        return ResponseEntity.ok()
+            // 预告旧版本的下线时间；也可以加 Link 头指向迁移指南
+            .header("Sunset", "Sat, 31 Aug 2024 23:59:59 GMT")
+            .header("Link", "&lt;https://developer.shopp.ing/migrate-to-v2&gt;;rel=\"sunset\"")
+            .body(ProductV1.from(products.get(productId)));
+    }
+}
+</pre>
+</div>
+</div>
+
+<p><code>Sunset</code> 头只有在消费者或其基础设施真的去检查它时才有用。提供者自己出的 SDK 通常会据此在日志里打警告。</p>
+
+<h3>攒着取舍，还是定期破坏</h3>
+
+<div class="vs">
+  <div class="new">
+    <div class="h">尽量停留在 v1</div>
+    <p style="padding:10px 14px;margin:0;font-size:14.5px">
+      作者通常建议：<strong>尽可能长久地留在版本 1</strong>，把领域覆盖全、收集反馈、弄清什么有效。
+      只有当期待已久的新功能足以抵消成本时才迁移到版本 2。版本 2 常常永远不会来 —— 那就与一个不完美但够用的 API 共存。
+    </p>
+  </div>
+  <div class="old">
+    <div class="h">但要看到长期代价</div>
+    <p style="padding:10px 14px;margin:0;font-size:14.5px">
+      消费者越多，修正越难。取舍越攒越多，API 越来越复杂，新的消费者集成起来越来越慢、越来越没吸引力。
+      严格的版本策略能强制迁移，但频繁的破坏性更新会让合作方和公众用户厌烦，转投更稳定的竞品。
+    </p>
+  </div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 务实一点</div>
+  <p>
+    对私有 API：如果确定某个破坏性修改<em>影响不到任何人</em>，可以只升次版本号，免得所有消费者都要改基础 URL（<code>/v1</code> → <code>/v2</code>）。这在合作伙伴或公开 API 上有风险。
+    另一个选择是保留想删的元素，但在 OpenAPI 里标记为<strong>已弃用</strong>（见本章末尾）。
+  </p>
+</div>
+
+<h2 id="extensible">可扩展的设计</h2>
+
+<p>破坏性修改和别扭的取舍并非宿命。好的初始设计能让将来的修改影响更小，甚至根本不需要修改。</p>
+
+<h3>之前学的已经在帮我们了</h3>
+<ul>
+  <li><strong>REST 的统一接口</strong>（第 4 章）：建立在粒度合适的业务概念上的 API 不容易需要破坏性修改；有了内容协商，新增 CSV、PDF 等格式毫无影响。</li>
+  <li><strong>拿来即用的数据</strong>（第 8 章）：金额带着币种，消费者就不会把「默认是欧元」硬编码进代码。</li>
+  <li><strong>接受多余的输入</strong>（第 9 章）：操作不因多余的数据报错，将来删除某个输入项就是兼容的。</li>
+  <li><strong>灵活的流程</strong>（第 10 章）：不绑定 UI、可以任意顺序收集数据的流程，以后很少需要改。</li>
+  <li><strong>大小合适的 API</strong>（第 11 章）：范围小、消费者少的 API 各自演进，远比一个无所不包的大 API 容易。</li>
+</ul>
+
+<h3>从过去的决定里学习</h3>
+<p>
+  「转账」操作最初只处理立即转账，返回一个布尔值 <code>executed</code>。后来加了预约转账，一个布尔值不够用了：现在有「已执行」「用户预约的」「因系统维护而推迟的」三种状态。
+  不能把 <code>executed</code> 换成 <code>status</code>（破坏性），只能<strong>保留它并新增 <code>status</code></strong>。不够漂亮，但能用。教训是：下次想用布尔值时，先多想一步。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 建一份「已知设计问题」清单</div>
+  <p>发现问题就记下来。它能防止重蹈覆辙、提示哪些地方需要更明确的指南（第 16 章）；如果 v2 真的到来，也能立刻知道要修什么。</p>
+</div>
+
+<h3>六个可扩展的设计模式</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 500" role="img" aria-label="六个可扩展的设计模式及其对比示例">
+  <g>
+    <rect class="bx" x="20" y="16" width="350" height="146" rx="10"/>
+    <text class="ttl" x="36" y="38">① 请求体和响应体永远用对象</text>
+    <text class="mono sm on-r" x="36" y="62">&#10007; [ {…}, {…} ]</text>
+    <text class="mono sm on-g" x="36" y="80">&#10003; { "data": [ {…}, {…} ] }</text>
+    <text class="sm" x="36" y="106">数组和原子类型没法扩展。想给列表加分页</text>
+    <text class="sm" x="36" y="124">元数据？只能把数组换成对象 —— 破坏性修改。</text>
+    <text class="sm" x="36" y="142">POST 返回一个字符串也是同样的问题。</text>
+
+    <rect class="bx" x="390" y="16" width="350" height="146" rx="10"/>
+    <text class="ttl" x="406" y="38">② 对象的数组优于原子值的数组</text>
+    <text class="mono sm on-r" x="406" y="62">&#10007; "owners": ["o1", "o2"]</text>
+    <text class="mono sm on-g" x="406" y="80">&#10003; "owners": [ { "id": "o1" }, … ]</text>
+    <text class="sm" x="406" y="106">以后想给每位户主加上姓名？字符串数组做不到。</text>
+    <text class="sm" x="406" y="124">例外：确信永远不需要更多信息时，</text>
+    <text class="sm" x="406" y="142">比如交易的 <tspan class="mono">tags</tspan>，标签本身就是全部。</text>
+
+    <rect class="bx" x="20" y="176" width="350" height="146" rx="10"/>
+    <text class="ttl" x="36" y="198">③ 使用可解释的格式</text>
+    <text class="mono sm on-r" x="36" y="222">&#10007; "frequency": "MONTHLY"</text>
+    <text class="mono sm on-g" x="36" y="240">&#10003; "frequency": "P1M"</text>
+    <text class="sm" x="36" y="266">ISO 8601 时长是一种能被解析的格式。</text>
+    <text class="sm" x="36" y="284">新增「每周」（<tspan class="mono">P1W</tspan>）时，消费者</text>
+    <text class="sm" x="36" y="302">不需要认识一个新的枚举值。</text>
+
+    <rect class="bx" x="390" y="176" width="350" height="146" rx="10"/>
+    <text class="ttl" x="406" y="198">④ 把同类数据放进数组</text>
+    <text class="mono sm on-r" x="406" y="222">&#10007; creationDate, executionDate, …</text>
+    <text class="mono sm on-g" x="406" y="240">&#10003; "events": [ { "status": "created",</text>
+    <text class="mono sm on-g" x="406" y="256">                 "date": "…" }, … ]</text>
+    <text class="sm" x="406" y="282">只要消费者是循环展示而不逐个解释，</text>
+    <text class="sm" x="406" y="300">新增一种状态（canceled）就不会影响他们。</text>
+
+    <rect class="bx" x="20" y="336" width="350" height="146" rx="10"/>
+    <text class="ttl" x="36" y="358">⑤ 枚举优于布尔值</text>
+    <text class="mono sm on-r" x="36" y="382">&#10007; "executed": false</text>
+    <text class="mono sm on-g" x="36" y="400">&#10003; "status": "delayed"</text>
+    <text class="sm" x="36" y="426">布尔值只有两种状态，现实往往不止。</text>
+    <text class="sm" x="36" y="444">但记住：给<tspan font-weight="700">输出</tspan>里的枚举加值</text>
+    <text class="sm" x="36" y="462">本身可能是破坏性的。</text>
+
+    <rect class="bx" x="390" y="336" width="350" height="146" rx="10"/>
+    <text class="ttl" x="406" y="358">⑥ 操作优于枚举</text>
+    <text class="mono sm on-r" x="406" y="382">&#10007; category: enum [food, travel, …]</text>
+    <text class="mono sm on-g" x="406" y="400">&#10003; GET /transaction-categories</text>
+    <text class="sm" x="406" y="426">如果一组取值经常变（交易分类），</text>
+    <text class="sm" x="406" y="444">别写死成枚举，提供一个操作来返回它们</text>
+    <text class="sm" x="406" y="462">（还能附带图标等额外信息）。</text>
+  </g>
+</svg>
+<figcaption>图 15-3　六个可扩展的设计模式</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 别为了想象中的未来过度设计</div>
+  <p>可扩展不等于「超级通用但超级复杂、覆盖一切永远不会发生的可能」。不要因此忽略设计的其他方面，尤其是满足需求和好用。</p>
+</div>
+
+<h2 id="openapi">用 OpenAPI 记录修改</h2>
+
+<p>清晰、完整的修改记录，是相关方评估影响、实现者更新代码、消费者决定是否要改的依据。</p>
+
+<h3>版本号</h3>
+
+<div class="code" data-lang="yaml">
+<pre>
+openapi: 3.1.0
+info:
+  title: Banking API
+  version: "1.2"          # API 的版本；加引号，否则会被解析成数字
+servers:
+  - url: /banking/v1      # 如果版本在路径里，主版本变化时记得更新这里
+</pre>
+</div>
+
+<p>
+  想同时追踪<strong>文档本身</strong>的修订（只是澄清了描述、重组了 schema，接口没变），可以借用补丁号：<code>version: 1.2.1</code>。私有 API 通常不需要这么细。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 从代码生成的文档</div>
+  <p>代码优先生成的 OpenAPI 文档，<code>info.version</code> 里可能是<strong>实现</strong>的版本（甚至是构建号），而不是 API 的版本。查一下生成器的文档，把它覆盖掉。</p>
+</div>
+
+<h3>标记弃用</h3>
+
+<div class="code" data-lang="yaml">
+<pre>
+info:
+  title: Banking API
+  version: "1.2"                    # 只升次版本：弃用不是破坏性修改
+paths:
+  /current-year-dashboard:
+    get:
+      deprecated: true              # 不应再使用，但为向后兼容而保留
+      ...
+components:
+  schemas:
+    Account:
+      properties:
+        cards:
+          deprecated: true
+          type: array
+</pre>
+</div>
+
+<p>
+  操作、参数、响应头、属性都可以标 <code>deprecated</code>。
+  把文档提供给消费者时，甚至可以直接<strong>隐去</strong>已弃用的元素：老消费者继续用，新消费者在文档里看不到，也就不会开始用（不过输出数据在实际调用时仍然可见）。
+</p>
+
+<h3>变更日志</h3>
+
+<p>所有 <code>description</code> 都支持 Markdown，可以直接把变更日志写进去；再用 <code>tags</code> 把本次改动的操作标出来，文档工具会据此分组：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+info:
+  title: Banking API
+  version: "1.2"
+  description: |
+    # Changelog
+
+    - Version 1.1:
+      - Added owners list on Read account.
+    - Version 1.2:
+      - Added cards list on Read account.
+      - Deprecated current year dashboard; use Get dashboard instead.
+paths:
+  /current-year-dashboard:
+    get:
+      tags:
+        - All
+        - Modified by v1.2          # 方便快速找到这个版本改动的操作
+      deprecated: true
+      description: |
+        # Changelog
+
+        - Version 1.2
+          - Deprecated; use Get dashboard instead.
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 让工具帮忙</div>
+  <p>
+    用 OpenAPI diff 工具列出改动，再让 AI 把它们写成通顺的文字。但文档里看不到的改动 —— 响应行为的变化、看不见的契约 —— 仍需要手工补充。
+  </p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>修改 API 时照常设计：满足需求、好用、可互操作、安全、高效、适配上下文。</li>
+  <li>向后兼容地修改<strong>输出</strong>：只新增数据，或在原数据的范围之内调整。</li>
+  <li>向后兼容地修改<strong>输入</strong>：只把必填变可选、新增可选数据、放宽现有数据的范围。</li>
+  <li>删除操作、替换状态码、修改流程步骤、修改安全方案都是破坏性的。修改作用域既可能破坏消费者，也可能造成安全漏洞。</li>
+  <li>消费者会依赖一切可观察到的行为（海勒姆定律）。用 OpenAPI diff 工具和测试来防止意外的修改。</li>
+  <li>接口契约的版本与实现的版本分开管理。</li>
+  <li>首选最通行的语义化版本（它说明了改动的类型）；发布频繁或有固定节奏时可以考虑日期版本。</li>
+  <li>首选最通行的路径级版本；也可以考虑自定义请求头；媒体类型版本会限制内容协商。不要对 API 的局部做版本控制。</li>
+  <li>从一开始就确定版本方案及其表示方式。</li>
+  <li>评估破坏性修改的影响：多少消费者、是谁、是否真的在用、有哪些技术或合约上的约束；再与它给消费者和组织带来的收益相权衡。</li>
+  <li>接受设计上的取舍，尽可能长久地停留在版本 N；新功能足够有价值时再迁移到 N+1。</li>
+  <li>可扩展的设计：拿来即用的数据、接受多余的输入、灵活的流程、避免无所不包的 API；体里用对象、同类数据归入数组、使用可解释的格式，并考虑对象数组优于原子数组、枚举优于布尔值、操作优于枚举。</li>
+  <li>在 OpenAPI 文档里更新版本、标记弃用元素、在描述里写变更日志。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      在线课程平台 API 的新版本增加了「添加课程」。下面的 OpenAPI 文档有什么问题？
+      <div class="code" data-lang="yaml"><pre>
+openapi: "3.1.0"
+info:
+  title: Online Course Platform
+  version: athena-build.20250117.1830
+paths:
+  /v1/courses:
+    get:
+      summary: Search courses
+  /v2/courses:
+    post:
+      summary: Add a course
+</pre></div>
+      <details class="ans"><summary>参考答案</summary>
+        ① <code>info.version</code> 是实现的构建号，不是 API 的版本。新增操作是向后兼容的修改 → 应为 <code>"1.1"</code>。
+        ② 对资源/操作单独做了版本控制（<code>/v1/courses</code> 的 <code>GET</code> 与 <code>/v2/courses</code> 的 <code>POST</code>）：新增操作不需要新的主版本，而且消费者无从知道哪些版本能搭配。
+        ③ 版本号写死在每条路径里 → 放到 <code>servers</code> 的 <code>url: /v1</code> 中，路径都是 <code>/courses</code>。
+        （仓库：<code>15. …/Listing 15.1</code>，答案见 <code>Appendix …/Listing A.21</code>。）
+      </details>
+    </li>
+    <li>
+      健身 API「创建训练」的请求体做了如下修改，逐项判断是否向后兼容：<br>
+      a) <code>difficulty</code> 的枚举从 <code>[easy, challenging]</code> 变为 <code>[easy, medium, hard]</code>；<br>
+      b) <code>duration</code> 从必填变为可选；<br>
+      c) 活动的 <code>dur</code> 改名为 <code>duration</code>；<br>
+      d) 活动的 <code>repetitions</code> 从可选变为必填；<br>
+      e) <code>activities</code> 的 <code>minItems</code> 从 1 变为 0；<br>
+      f) 新增可选属性 <code>notes</code>。
+      <details class="ans"><summary>参考答案</summary>
+        这是<strong>输入</strong>，所以规则是「只能放宽」。
+        a) <span class="tag-r">破坏</span>：删除了 <code>challenging</code>（新增 <code>medium</code>、<code>hard</code> 本身是兼容的）。
+        b) <span class="tag-g">兼容</span>。
+        c) <span class="tag-r">破坏</span>：重命名；而且是静默的 —— 旧消费者发的 <code>dur</code> 会被当成多余数据忽略。
+        d) <span class="tag-r">破坏</span>：可选变必填。
+        e) <span class="tag-g">兼容</span>：放宽了范围。
+        f) <span class="tag-g">兼容</span>。
+        （仓库：<code>15. …/Listing 15.2</code> 与 <code>15.3</code> 是书中的原题，可以自己对比一遍。）
+      </details>
+    </li>
+    <li>把上一题的 a) 到 f) 假设成对<strong>响应体</strong>的修改，重新判断一遍。体会「输入放宽、输出收紧」。
+      <details class="ans"><summary>参考答案</summary>
+        a) <span class="tag-r">破坏</span>：新增了 <code>medium</code>、<code>hard</code>（删除 <code>challenging</code> 反而是兼容的）。
+        b) <span class="tag-r">破坏</span>：必返变可选。
+        c) <span class="tag-r">破坏</span>。
+        d) <span class="tag-g">兼容</span>：可选变必返。
+        e) <span class="tag-r">破坏</span>：消费者可能假设数组至少有一项。
+        f) <span class="tag-g">兼容</span>：新增数据。
+      </details>
+    </li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

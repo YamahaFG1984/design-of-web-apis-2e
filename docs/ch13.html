@@ -1,0 +1,1022 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 13 章 · 设计高效的 API — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="13">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 13 章</span>
+<h1>设计高效的 API</h1>
+<p class="lede">
+  购物公司上线了重新设计的 API，结果销量下滑。监控显示用户搜索商品时要等 500 毫秒以上。
+  问题不在数据库缺索引，也不在服务器不够 —— 而在 <strong>API 的设计</strong>：每搜到一件商品，前端都得再发好几个请求才能凑齐要显示的数据。
+  效率是继安全之后第二重要的约束。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解低效的 API 如何同时伤害消费者和提供者</li>
+    <li>知道优化设计之前先检查什么（HTTP 配置、限流、真正的根因）</li>
+    <li>用「聚焦用户需求」这把老钥匙优化调用流程</li>
+    <li>启用缓存和条件读取：<code>Cache-Control</code>、<code>ETag</code>、<code>If-None-Match</code>、<code>304</code></li>
+    <li>优化数据量：模型选择、字段选择、<code>PATCH</code>、分页</li>
+    <li>设计批量操作及其错误策略（<code>207 Multi-Status</code>）</li>
+    <li>知道什么时候该另建一层专门优化的 API</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="overview">低效的 API 是什么样的</h2>
+
+<p>
+  <strong>高效的 API</strong> 让消费者用最少的能耗和处理、哪怕在糟糕的网络下也能快速达成目标，同时让提供者的基础设施得到有效利用。反过来：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="低效 API 对消费者和提供者的影响：许多串行调用、大量重复加载的数据、过载且昂贵的基础设施">
+  <rect class="bx-b" x="20" y="24" width="220" height="226" rx="12"/>
+  <text class="ttl on-b" x="130" y="48" text-anchor="middle">消费者</text>
+  <text class="sm" x="130" y="76" text-anchor="middle">&#128267; 耗电快</text>
+  <text class="sm" x="130" y="98" text-anchor="middle">&#128246; 流量用得多</text>
+  <text class="sm" x="130" y="120" text-anchor="middle">&#128034; 网络差时更慢</text>
+  <text class="sm" x="130" y="142" text-anchor="middle">&#128544; 用户不满</text>
+  <text class="sm" x="130" y="178" text-anchor="middle">10 次 300 毫秒的串行调用</text>
+  <text class="sm" x="130" y="196" text-anchor="middle">= 3 秒</text>
+  <text class="sm" x="130" y="222" text-anchor="middle">而人对超过 500 毫秒的</text>
+  <text class="sm" x="130" y="240" text-anchor="middle">延迟就有感知</text>
+
+  <g>
+    <path class="ln-r" d="M240 56 H518" marker-end="url(#ar-r)"/>
+    <path class="ln-r" d="M240 72 H518" marker-end="url(#ar-r)"/>
+    <path class="ln-r" d="M240 88 H518" marker-end="url(#ar-r)"/>
+    <path class="ln-r" d="M240 104 H518" marker-end="url(#ar-r)"/>
+    <path class="ln-r" d="M240 120 H518" marker-end="url(#ar-r)"/>
+    <text class="sm on-r" x="380" y="46" text-anchor="middle">许多串行调用</text>
+    <path class="ln-r" d="M518 170 H242" marker-end="url(#ar-r)" style="stroke-width:6"/>
+    <text class="sm on-r" x="380" y="160" text-anchor="middle">单次调用返回大量数据</text>
+    <path class="ln-r" d="M518 216 H242" marker-end="url(#ar-r)" style="stroke-width:6"/>
+    <text class="sm on-r" x="380" y="206" text-anchor="middle">同样的数据一遍遍重新加载</text>
+  </g>
+
+  <rect class="bx-a" x="520" y="24" width="220" height="226" rx="12"/>
+  <text class="ttl on-a" x="630" y="48" text-anchor="middle">提供者</text>
+  <text class="sm" x="630" y="76" text-anchor="middle">&#128293; 基础设施过载</text>
+  <text class="sm" x="630" y="98" text-anchor="middle">&#128184; 出站流量费用高</text>
+  <text class="sm" x="630" y="120" text-anchor="middle">&#128201; 客户流失</text>
+  <text class="sm" x="630" y="160" text-anchor="middle">限流、优化实现和数据库</text>
+  <text class="sm" x="630" y="178" text-anchor="middle">能缓解，但只要设计本身</text>
+  <text class="sm" x="630" y="196" text-anchor="middle">逼着消费者多调用、多取数据，</text>
+  <text class="sm" x="630" y="214" text-anchor="middle">问题就不会消失</text>
+</svg>
+<figcaption>图 13-1　有线网络下的应用同样受影响：按量付费的批处理跑得更久就更贵；内部管理后台慢，员工就在等待中浪费时间</figcaption>
+</figure>
+
+<h3>设计如何贡献效率</h3>
+<p>
+  目标很简单：完成一个用例所需的<strong>调用次数最少</strong>（尤其是串行调用），<strong>处理的数据最少</strong>。手段有四类：
+</p>
+<ol>
+  <li>优化输入和输出数据；</li>
+  <li>优化调用流程；</li>
+  <li>启用缓存和条件请求；</li>
+  <li>必要时建一层专门为效率优化的 API。</li>
+</ol>
+<p>
+  和安全一样，效率是在<strong>做对了事、打磨好用之后</strong>才集中处理的约束。好消息是：那样的 API 本身就已经相当高效了。
+</p>
+
+<h2 id="before">优化设计之前先检查这些</h2>
+
+<p>下面这些与设计无关，但能避免你为了想象中的（或被误判的）性能问题给设计增加不必要的复杂度。</p>
+
+<h3>HTTP 配置</h3>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>HTTP 1.1</th><th>HTTP 2 及以上</th></tr>
+  <tr><td>压缩</td><td>只能压缩请求体/响应体，而且<strong>可能默认没开</strong></td><td>体和头都压缩，传输用更高效的二进制格式</td></tr>
+  <tr><td>连接</td><td>可复用（keep-alive），但同一连接上<strong>不能并行</strong>请求；浏览器和手机系统还限制到同一服务器的并发连接数</td><td>同一连接上可以并行发送请求</td></tr>
+</table>
+</div>
+
+<p>
+  换版本并不改变我们使用 HTTP 的方式（请求、响应、方法、状态码都一样）。平均而言，HTTP 压缩能把 JSON 这类文本数据<strong>压到原来的 25% 左右</strong>。
+  所以在怀疑设计之前，先确认 HTTP 2 已启用，或者 HTTP 1.1 的压缩和长连接已打开。
+</p>
+
+<h3>限流</h3>
+<p>
+  <strong>限流（rate limiting）</strong>控制消费者在一段时间内能发多少请求，既防恶意攻击（DoS）和无心之失（死循环 Bug），也保证资源在消费者之间公平分配。
+  制定限流策略不是设计者的事，但要确保它存在，并且以好用、可互操作的方式呈现。
+</p>
+
+<div class="code" data-lang="http">
+<pre>
+HTTP/1.1 429 Too Many Requests
+Retry-After: Tue, 02 Jan 2024 14:12:00 GMT
+</pre>
+</div>
+
+<p>更好的做法是在<strong>所有</strong>响应里都带上限流信息，让消费者能主动调整，而不是等到撞墙：</p>
+
+<div class="tw">
+<table>
+  <tr><th>写法</th><th>示例</th><th>说明</th></tr>
+  <tr>
+    <td>事实标准（自定义头）</td>
+    <td><code>X-RateLimit-Limit: 100</code><br><code>X-RateLimit-Remaining: 90</code><br><code>X-RateLimit-Reset: Tue, 02 Jan 2024 14:12:00 GMT</code></td>
+    <td>没有 RFC 定义，但被广泛使用（命名略有差异）</td>
+  </tr>
+  <tr>
+    <td>IETF 草案（推荐关注）</td>
+    <td><code>RateLimit: "default";r=90;t=20</code><br><code>RateLimit-Policy: "default";q=100;w=60</code></td>
+    <td>还剩 90 次，20 秒后重置；策略是每 60 秒 100 次</td>
+  </tr>
+</table>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 关于 X- 前缀</div>
+  <p>
+    <code>X-</code> 原本表示「实验性的」或「扩展的」，用来区分自定义头和标准头。这个做法在 2012 年被 RFC 6648 废弃了 ——
+    因为实验性的名字一旦被广泛采用就改不掉了。这个教训适用于 API 里的一切数据（第 15 章）。
+  </p>
+</div>
+
+<h3>找到真正的根因</h3>
+
+<div class="box warn">
+  <div class="t">&#9888; 别急着怪设计</div>
+  <p>
+    运行时出现性能问题，人们常常匆忙归咎于 API 设计。但据作者多年的经验，<strong>大多数效率问题出在（广义的）实现上</strong>：
+    服务器规格太小、负载均衡配错了把流量全打到一个实例、网络带宽不足、实现有 Bug……而最常见的元凶是数据库 —— 数不清有多少次，解决办法只是<strong>补上一个缺失的索引</strong>。
+    动手解决任何问题之前，先确认找到的是真正的根因。
+  </p>
+</div>
+
+<h2 id="needs">聚焦用户需求，本身就是在做优化</h2>
+
+<p>前面学的很多东西已经在不知不觉中提升了效率：只返回必要的数据（第 5 章）、把创建转账所需的输入砍掉一半（第 9 章）、把三步串行的选择流程变成一步（第 10 章）。局部看是小优化，<strong>放到每小时成千上万次调用的规模上，差别巨大</strong>。</p>
+
+<h3>案例：手机银行的首页</h3>
+
+<p>首页要显示用户及关联人名下账户的总余额、近三个月交易的分类饼图，以及境外交易提醒。看看三个版本：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 420" role="img" aria-label="银行首页数据加载流程的三个版本：原始版 114 次调用，优化操作后 3 次调用，重新思考流程后 1 次调用">
+  <!-- V1 -->
+  <rect class="bx-r" x="20" y="20" width="720" height="150" rx="12"/>
+  <text class="ttl on-r" x="36" y="44">版本 1：通用操作 + 列表里缺数据</text>
+  <text class="mono sm" x="36" y="68">GET 列出户主 ×1</text>
+  <text class="mono sm" x="36" y="86">GET 读取户主 ×1</text>
+  <text class="mono sm" x="36" y="104">GET 列出账户 ×1</text>
+  <text class="mono sm" x="36" y="122">GET 读取账户 ×1</text>
+  <text class="mono sm" x="36" y="140">GET 列出交易 ×10　（每页最多 10 条）</text>
+  <text class="mono sm" x="36" y="158">GET 读取交易 ×100</text>
+  <text class="sm" x="330" y="86">列表里的摘要缺少必要数据，</text>
+  <text class="sm" x="330" y="104">只好逐个再读一遍</text>
+  <text class="sm" x="330" y="140">三个月约 100 笔交易</text>
+  <rect class="bx" x="560" y="56" width="164" height="100" rx="8"/>
+  <text class="ttl on-r" x="642" y="80" text-anchor="middle">114 次调用</text>
+  <text class="sm" x="642" y="102" text-anchor="middle">400 ～ 11,400 毫秒</text>
+  <text class="sm" x="642" y="122" text-anchor="middle">630 KB</text>
+  <text class="sm" x="642" y="142" text-anchor="middle">最多 100 个并发请求</text>
+
+  <!-- V2 -->
+  <rect class="bx-a" x="20" y="186" width="720" height="104" rx="12"/>
+  <text class="ttl on-a" x="36" y="210">版本 2：优化每个操作</text>
+  <text class="mono sm" x="36" y="234">GET 列出户主 ×1</text>
+  <text class="mono sm" x="36" y="252">GET 列出账户 ×1</text>
+  <text class="mono sm" x="36" y="270">GET 列出交易 ×1　（每页最多 100 条）</text>
+  <text class="sm" x="330" y="234">列表里直接包含所需数据</text>
+  <text class="sm" x="330" y="252">页大小上限按业务实际调整</text>
+  <text class="sm" x="330" y="270">但户主和账户一多就又慢了</text>
+  <rect class="bx" x="560" y="204" width="164" height="74" rx="8"/>
+  <text class="ttl on-a" x="642" y="228" text-anchor="middle">3 次调用</text>
+  <text class="sm" x="642" y="248" text-anchor="middle">300 毫秒</text>
+  <text class="sm" x="642" y="266" text-anchor="middle">560 KB（仍然很多）</text>
+
+  <!-- V3 -->
+  <rect class="bx-g" x="20" y="306" width="720" height="94" rx="12"/>
+  <text class="ttl on-g" x="36" y="330">版本 3：重新思考流程</text>
+  <text class="mono sm" x="36" y="354">GET 读取看板 ×1</text>
+  <text class="sm" x="36" y="380">真正的问题是：我们在让消费者替我们做业务计算</text>
+  <text class="sm" x="330" y="354">「看板」是一个成立的业务概念，</text>
+  <text class="sm" x="330" y="372">客户端和顾问端应用都能复用</text>
+  <rect class="bx" x="560" y="320" width="164" height="68" rx="8"/>
+  <text class="ttl on-g" x="642" y="342" text-anchor="middle">1 次调用</text>
+  <text class="sm" x="642" y="360" text-anchor="middle">100 毫秒</text>
+  <text class="sm" x="642" y="378" text-anchor="middle">20 KB</text>
+</svg>
+<figcaption>图 13-2　630 KB 看着不多，但 10 万用户每天打开一次首页，一个月就是约 1.8 TB</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#9733; 低效常常是一个信号：你解决的不是正确的问题</div>
+  <p>
+    一个操作或流程很低效时，先问「消费者为什么需要这么复杂的流程？」。
+    这里的答案是：我们把业务逻辑（汇总余额、分类统计）推给了应用。这不仅容易出错、不好用（第 2 章），现在还发现它很低效。
+  </p>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 两个提醒</div>
+  <ul>
+    <li>版本 3 高效的前提是<strong>实现</strong>也高效。如果实现内部照搬版本 1 的做法逐条读交易，只是省掉了互联网上的往返，数据库照样被压垮。</li>
+    <li>这种专用操作可能离核心领域较远、灵活性较低。可以考虑把它放进一个专门的 API（见本章最后一节）。</li>
+  </ul>
+</div>
+
+<h2 id="cache">缓存与条件读取</h2>
+
+<p>
+  最高效的 API 调用是<strong>根本没发生</strong>的调用，其次是<strong>只在必要时才取数据</strong>的调用。对应两个机制：
+</p>
+<ul>
+  <li><strong>缓存</strong>：消费者把数据存起来复用。少了调用和下载，但有用到过期数据的风险。</li>
+  <li><strong>条件请求</strong>：「数据变了才给我」。仍然要调用，但数据没变时不用下载。</li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="用户多次查看账户详情时，无缓存、缓存 10 分钟、缓存加条件请求三种策略的对比">
+  <text class="sm" x="150" y="22">首次</text><text class="sm" x="270" y="22">+3 分钟</text><text class="sm" x="390" y="22">+6 分钟</text>
+  <text class="sm on-r" x="484" y="22">余额变了！</text>
+  <text class="sm" x="560" y="22">+7 分钟</text><text class="sm" x="680" y="22">+11 分钟</text>
+  <path class="ln-r" d="M500 28 V270" stroke-dasharray="4 4"/>
+
+  <text class="ttl" x="20" y="64">不缓存</text>
+  <text class="sm" x="20" y="82">每次都下载</text>
+  <g>
+    <rect class="bx-r" x="130" y="46" width="76" height="40" rx="6"/><text class="mono sm" x="168" y="63" text-anchor="middle">GET</text><text class="sm" x="168" y="79" text-anchor="middle">45.6</text>
+    <rect class="bx-r" x="250" y="46" width="76" height="40" rx="6"/><text class="mono sm" x="288" y="63" text-anchor="middle">GET</text><text class="sm" x="288" y="79" text-anchor="middle">45.6</text>
+    <rect class="bx-r" x="370" y="46" width="76" height="40" rx="6"/><text class="mono sm" x="408" y="63" text-anchor="middle">GET</text><text class="sm" x="408" y="79" text-anchor="middle">45.6</text>
+    <rect class="bx-r" x="540" y="46" width="76" height="40" rx="6"/><text class="mono sm" x="578" y="63" text-anchor="middle">GET</text><text class="sm" x="578" y="79" text-anchor="middle">10.6</text>
+    <rect class="bx-r" x="660" y="46" width="76" height="40" rx="6"/><text class="mono sm" x="698" y="63" text-anchor="middle">GET</text><text class="sm" x="698" y="79" text-anchor="middle">10.6</text>
+  </g>
+
+  <text class="ttl" x="20" y="144">缓存 10 分钟</text>
+  <text class="sm" x="20" y="162">期间不调用</text>
+  <g>
+    <rect class="bx-b" x="130" y="126" width="76" height="40" rx="6"/><text class="mono sm" x="168" y="143" text-anchor="middle">GET</text><text class="sm" x="168" y="159" text-anchor="middle">45.6</text>
+    <rect class="bx-g" x="250" y="126" width="76" height="40" rx="6"/><text class="sm" x="288" y="143" text-anchor="middle">读缓存</text><text class="sm" x="288" y="159" text-anchor="middle">45.6</text>
+    <rect class="bx-g" x="370" y="126" width="76" height="40" rx="6"/><text class="sm" x="408" y="143" text-anchor="middle">读缓存</text><text class="sm" x="408" y="159" text-anchor="middle">45.6</text>
+    <rect class="bx-r" x="540" y="126" width="76" height="40" rx="6"/><text class="sm" x="578" y="143" text-anchor="middle">读缓存</text><text class="sm on-r" x="578" y="159" text-anchor="middle" font-weight="700">45.6 &#10007;</text>
+    <rect class="bx-b" x="660" y="126" width="76" height="40" rx="6"/><text class="mono sm" x="698" y="143" text-anchor="middle">GET</text><text class="sm" x="698" y="159" text-anchor="middle">10.6</text>
+    <text class="sm on-r" x="578" y="182" text-anchor="middle">显示了错误的余额</text>
+    <text class="sm" x="698" y="182" text-anchor="middle">缓存过期，重新取</text>
+  </g>
+
+  <text class="ttl" x="20" y="232">缓存 + 条件请求</text>
+  <text class="sm" x="20" y="250">用前先问变没变</text>
+  <g>
+    <rect class="bx-b" x="130" y="214" width="76" height="40" rx="6"/><text class="mono sm" x="168" y="231" text-anchor="middle">GET</text><text class="sm" x="168" y="247" text-anchor="middle">45.6</text>
+    <rect class="bx-g" x="250" y="214" width="76" height="40" rx="6"/><text class="mono sm" x="288" y="231" text-anchor="middle">GET If…</text><text class="sm" x="288" y="247" text-anchor="middle">304 没变</text>
+    <rect class="bx-g" x="370" y="214" width="76" height="40" rx="6"/><text class="mono sm" x="408" y="231" text-anchor="middle">GET If…</text><text class="sm" x="408" y="247" text-anchor="middle">304 没变</text>
+    <rect class="bx-b" x="540" y="214" width="76" height="40" rx="6"/><text class="mono sm" x="578" y="231" text-anchor="middle">GET If…</text><text class="sm" x="578" y="247" text-anchor="middle">200：10.6</text>
+    <rect class="bx-g" x="660" y="214" width="76" height="40" rx="6"/><text class="mono sm" x="698" y="231" text-anchor="middle">GET If…</text><text class="sm" x="698" y="247" text-anchor="middle">304 没变</text>
+    <text class="sm on-g" x="408" y="272" text-anchor="middle">有调用，但不下载数据</text>
+    <text class="sm on-g" x="578" y="272" text-anchor="middle">变了才返回新数据</text>
+  </g>
+</svg>
+<figcaption>图 13-3　三种策略。蓝色：调用并下载；绿色：省掉了下载（或连调用也省了）；红色：浪费或出错</figcaption>
+</figure>
+
+<h3>不能让消费者自己决定怎么缓存</h3>
+<p>
+  缓存策略必须由<strong>提供者</strong>规定。过期的缓存轻则惹恼用户，重则引发法律纠纷：App 显示了错误的余额，用户据此消费，账户透支、产生费用，接下来就是投诉、诉讼和信任的丧失。
+</p>
+
+<h3>按数据和场景制定缓存策略</h3>
+
+<p>要考虑数据的<strong>组成</strong>（不同部分寿命不同）、<strong>什么事件会改变它</strong>、<strong>易变性</strong>，以及<strong>使用场景</strong>（有时用旧数据也无妨）：</p>
+
+<div class="tw">
+<table>
+  <tr><th>数据</th><th>特点</th><th>策略</th></tr>
+  <tr><td>开户时展示的银行卡种类和价格</td><td>种类不变；价格每月 15 日可能调整</td><td>可以缓存到下一个 15 日</td></tr>
+  <tr><td>账户（类型、户主名、余额）</td><td>类型和户主名几乎不变，但余额随交易实时变化</td><td>允许缓存，但<strong>使用前必须校验</strong></td></tr>
+  <tr><td>首页的交易分类饼图</td><td>每笔新交易都会影响它，但它本身是粗粒度的、模糊的</td><td>可以缓存几小时甚至一天；在数据里标明计算时间</td></tr>
+</table>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 别一个人决定</div>
+  <p>和领域专家、架构师一起讨论，确认没有安全、业务或法规方面的理由禁止客户端缓存。把定下来的策略写进 OpenAPI 文档里操作或 <code>2XX</code> 响应的描述中 —— 实现者需要它。</p>
+</div>
+
+<h3>返回缓存指令：Cache-Control</h3>
+
+<div class="tw">
+<table>
+  <tr><th>响应头</th><th>含义</th></tr>
+  <tr><td><code>Cache-Control: no-store</code></td><td>不能缓存</td></tr>
+  <tr><td><code>Cache-Control: max-age=600</code></td><td>可以缓存 600 秒</td></tr>
+  <tr><td><code>Cache-Control: no-cache</code><br><code>ETag: "z567dff"</code></td><td>名字很迷惑：它<strong>允许</strong>缓存，但每次使用前必须向服务端校验。<code>ETag</code> 是校验时要用的「数据版本」</td></tr>
+  <tr><td><code>Vary: Accept, Accept-Language</code></td><td>HTTP 缓存默认以 URL 为键。如果同一个 URL 因内容协商而有多种表示（JSON/XML、英语/法语），用 <code>Vary</code> 说明哪些请求头也要参与缓存键的计算</td></tr>
+</table>
+</div>
+
+<p>这些都是标准的 HTTP 机制（RFC 9111），任何遵循 HTTP 缓存规范的工具都能自动使用。</p>
+
+<h3>条件读取：If-None-Match 与 304</h3>
+
+<p>
+  第 12 章用 <code>If-Match</code> 做条件<em>更新</em>。条件<em>读取</em>用的是它的反面 <strong><code>If-None-Match</code></strong>：「如果数据<em>不是</em>这个版本了，就给我新的」。
+</p>
+
+<div class="vs">
+  <div class="new">
+    <div class="h">数据没变 → 304，不返回数据</div>
+    <div class="code" data-lang="http"><pre>
+GET /accounts/123
+If-None-Match: "z567dff"
+
+HTTP/1.1 304 Not Modified
+Cache-Control: no-cache
+ETag: "z567dff"
+</pre></div>
+  </div>
+  <div class="old">
+    <div class="h">数据变了 → 200 + 新数据 + 新 ETag</div>
+    <div class="code" data-lang="http"><pre>
+GET /accounts/123
+If-None-Match: "z567dff"
+
+HTTP/1.1 200 OK
+Cache-Control: no-cache
+ETag: "890xtdi"
+
+{ "balance": 10.6, ... }
+</pre></div>
+  </div>
+</div>
+
+<p>（也可以用基于日期的 <code>Last-Modified</code> / <code>If-Modified-Since</code>。）别忘了把这些头和 <code>304</code> 响应写进 OpenAPI 文档。</p>
+
+<div class="tabs" data-title="条件读取：服务端与客户端">
+<div class="code" data-lang="python" data-file="FastAPI + httpx">
+<pre>
+# ---------- 服务端 ----------
+from fastapi import FastAPI, Header, Response
+
+app = FastAPI()
+
+@app.get("/accounts/{account_id}")
+def read_account(account_id: str, response: Response,
+                 if_none_match: str | None = Header(None)):
+    account = accounts.get(account_id)
+    etag = etag_of(account)                        # 如内容的哈希，或版本号
+
+    headers = {"Cache-Control": "no-cache",        # 可以缓存，但用前必须校验
+               "ETag": etag,
+               "Vary": "Accept"}
+    if if_none_match == etag:
+        return Response(status_code=304, headers=headers)   # 没变：不返回数据
+
+    response.headers.update(headers)
+    return account
+
+
+# ---------- 客户端：一个最简单的校验式缓存 ----------
+import httpx
+
+api = httpx.Client(base_url="https://api.bank.com")
+cache: dict[str, tuple[str, dict]] = {}            # url → (etag, data)
+
+def get_with_cache(url: str) -&gt; dict:
+    headers = {}
+    if url in cache:
+        headers["If-None-Match"] = cache[url][0]   # 带上已有的版本
+    r = api.get(url, headers=headers)
+    if r.status_code == 304:
+        return cache[url][1]                       # 没变：直接用缓存，零下载
+    cache[url] = (r.headers["ETag"], r.json())     # 变了：更新缓存
+    return cache[url][1]
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono + fetch">
+<pre>
+// ---------- 服务端 ----------
+import { Hono } from "hono";
+const app = new Hono();
+
+app.get("/accounts/:accountId", (c) =&gt; {
+  const account = accounts.get(c.req.param("accountId"));
+  const etag = etagOf(account);                    // 如内容的哈希，或版本号
+
+  c.header("Cache-Control", "no-cache");           // 可以缓存，但用前必须校验
+  c.header("ETag", etag);
+  c.header("Vary", "Accept");
+
+  if (c.req.header("If-None-Match") === etag) {
+    return c.body(null, 304);                      // 没变：不返回数据
+  }
+  return c.json(account);
+});
+// Hono 也自带 etag() 中间件，可以自动完成这件事
+
+
+// ---------- 客户端：一个最简单的校验式缓存 ----------
+const cache = new Map&lt;string, { etag: string; data: unknown }&gt;();
+
+async function getWithCache&lt;T&gt;(url: string): Promise&lt;T&gt; {
+  const cached = cache.get(url);
+  const response = await fetch(url, {
+    headers: cached ? { "If-None-Match": cached.etag } : {},   // 带上已有的版本
+  });
+  if (response.status === 304) return cached!.data as T;       // 没变：直接用缓存，零下载
+  const data = await response.json();
+  cache.set(url, { etag: response.headers.get("ETag")!, data }); // 变了：更新缓存
+  return data as T;
+}
+// 浏览器里的 fetch 会自动遵循 Cache-Control 和 ETag，通常不需要手写这段
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot + RestClient">
+<pre>
+// ---------- 服务端 ----------
+@GetMapping("/accounts/{accountId}")
+public ResponseEntity&lt;Account&gt; readAccount(@PathVariable String accountId, WebRequest request) {
+    Account account = accounts.get(accountId);
+    String etag = etagOf(account);                       // 如内容的哈希，或版本号
+
+    // checkNotModified 会比较 If-None-Match；匹配时 Spring 自动返回 304
+    if (request.checkNotModified(etag)) {
+        return null;
+    }
+    return ResponseEntity.ok()
+        .cacheControl(CacheControl.noCache())            // 可以缓存，但用前必须校验
+        .eTag(etag)
+        .varyBy("Accept")
+        .body(account);
+}
+
+
+// ---------- 客户端：一个最简单的校验式缓存 ----------
+record Cached(String etag, Account data) {}
+Map&lt;String, Cached&gt; cache = new ConcurrentHashMap&lt;&gt;();
+
+Account getWithCache(String path) {
+    Cached cached = cache.get(path);
+    ResponseEntity&lt;Account&gt; response = api.get().uri(path)
+        .headers(h -&gt; { if (cached != null) h.setIfNoneMatch(cached.etag()); })  // 带上已有的版本
+        .retrieve()
+        .toEntity(Account.class);
+
+    if (response.getStatusCode() == HttpStatus.NOT_MODIFIED) {
+        return cached.data();                            // 没变：直接用缓存，零下载
+    }
+    cache.put(path, new Cached(response.getHeaders().getETag(), response.getBody()));
+    return response.getBody();
+}
+</pre>
+</div>
+</div>
+
+<h2 id="volume">优化数据量</h2>
+
+<p>HTTP 压缩已经能减掉大部分体积。在此之上，可以让消费者<strong>按场景多拿或少拿数据</strong>：多拿能减少调用次数，少拿能加快响应、降低出站流量成本。</p>
+
+<h3>让消费者选择模型</h3>
+<p>
+  列表返回摘要、读取返回完整模型 —— 这个默认选择一旦定下就改不了，可能对某些场景太多、对另一些又太少。可以让消费者自己选，两种做法：
+</p>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">自定义媒体类型</div>
+    <div class="code" data-lang="http"><pre>
+GET /accounts/123
+Accept: application/vnd.bankingapi.summarized+json
+
+HTTP/1.1 200 OK
+Content-Type: application/vnd.bankingapi.summarized+json
+
+{ "id": "...", "balance": 45.6 }
+</pre></div>
+  </div>
+  <div class="new">
+    <div class="h">Prefer 请求头（RFC 7240）</div>
+    <div class="code" data-lang="http"><pre>
+GET /accounts
+Prefer: model=complete
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+Preference-Applied: model=complete
+
+{ "data": [ { "id": "...", "balance": 45.6,
+              "owner": { ... }, ... } ] }
+</pre></div>
+  </div>
+</div>
+
+<p>
+  <code>vnd</code> 表示厂商自定义的类型，<code>+json</code> 表示它基于 JSON。不指定时返回默认模型，行为和以前一样。
+  两种做法都合乎 HTTP 规范，但<strong>都不常见，慎用</strong>；<code>Prefer</code> 的好处是保留了大家熟悉的 <code>application/json</code>。
+</p>
+
+<p>同样的 <code>Prefer</code> 头还能控制<strong>创建或更新后要不要返回资源</strong>：<code>Prefer: model=none</code> 时只返回 <code>201 Created</code> 和 <code>Location</code>，不带响应体（仍用 <code>201</code> 而不是 <code>204</code>，以保留「创建了东西」这个信息）；也可以是 <code>model=minimal</code> 或 <code>model=summarized</code>。</p>
+
+<h3>字段选择</h3>
+<p>
+  更细的粒度：让消费者指明要哪些字段。有些超媒体格式自带这个功能（JSON:API 的 <code>?fields[account]=balance</code>）；
+  用普通 JSON 的话可以自己定一个 <code>?fields=balance</code>。GraphQL 和 OData 也提供字段选择。
+</p>
+
+<h3>把重复出现的数据集中到专门的操作</h3>
+<p>
+  第 8 章建议给代码配上可读的标签。但一百笔交易里可能有三十笔都带着 <code>"code": 123, "label": "Restaurant"</code>；消费者早就知道 123 是什么了，仍然每次都收到。
+  可以提供一个专门的操作：通用的 <code>GET /codes/{codeName}/values</code>，或者更具体、内容更丰富（图标、长短标签）的 <code>GET /transaction-categories</code>。
+  这种数据非常适合缓存。代价是交易数据不那么「拿来即用」了 —— 规模大时才值得。
+</p>
+
+<h3>PATCH 优于 PUT</h3>
+<p>
+  把一笔交易标记为「已核对」，<code>PATCH</code> 只需发 <code>{"checked": true}</code>，<code>PUT</code> 则要发整笔交易。
+  单看微不足道，但想想规模：不是一个用户核对一笔交易，而是几十万、上百万用户每周核对十倍于此的交易。
+</p>
+
+<h3>JSON Merge Patch vs JSON Patch</h3>
+
+<p>我们一直用的 <code>PATCH</code> 写法叫 <strong>JSON Merge Patch</strong>（RFC 7396）。修改数组里的元素时，还有另一种格式 <strong>JSON Patch</strong>（RFC 6902）：</p>
+
+<div class="vs">
+  <div class="new">
+    <div class="h">JSON Merge Patch：发送改动后的部分</div>
+    <div class="code" data-lang="http"><pre>
+PATCH /owners/123
+Content-Type: application/merge-patch+json
+If-Match: "et715"
+
+{
+  "addresses": [
+    { "type": "home", "city": "Paris", ... },
+    { "type": "office", ... }
+  ]
+}
+</pre></div>
+  </div>
+  <div class="old">
+    <div class="h">JSON Patch：描述一系列修改动作</div>
+    <div class="code" data-lang="http"><pre>
+PATCH /owners/123
+Content-Type: application/json-patch+json
+If-Match: "et715"
+
+[
+  {
+    "op": "replace",
+    "path": "/addresses/0/city",
+    "value": "Paris"
+  }
+]
+</pre></div>
+  </div>
+</div>
+
+<p>
+  只改一个城市，Merge Patch 得把<strong>整个数组</strong>发过去，JSON Patch 只描述那一处修改。尽管如此，作者<strong>不推荐</strong> JSON Patch：
+  它不常用、复杂，而且几乎无法用 OpenAPI 和 JSON Schema 描述「允许哪些操作」。
+  如果数组真的大到值得这样优化，更好的做法是把它从资源里拆出去，用独立的操作管理。
+  真有需要时，可以靠内容协商同时支持两种格式。
+</p>
+
+<h2 id="pagination">优化分页</h2>
+
+<h3>页大小</h3>
+
+<div class="tw">
+<table>
+  <tr><th>参数</th><th>设多少</th><th>为什么</th></tr>
+  <tr><td>最大值</td><td>按业务和用例定（交易：100）</td><td>设成 10 的话，取 100 笔要调 10 次（版本 1 的教训）。但越大意味着越多的输出数据和越长的下载时间</td></tr>
+  <tr><td>最小值</td><td>1</td><td>设成 50 的话，只要 10 笔的消费者白白多拿 40 笔。设成 1 还能「取最近一笔交易」</td></tr>
+  <tr><td>默认值</td><td>偏小但有用（10）</td><td><strong>大多数调用都会用默认值</strong>；设太高会返回大量没人需要的数据。把页大小设成必填能避免浪费，但不够友好</td></tr>
+</table>
+</div>
+
+<h3>游标还是页码</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="基于页码的分页在数据变动时会出现重复或遗漏，基于游标的分页不会">
+  <rect class="bx" x="20" y="20" width="350" height="210" rx="12"/>
+  <text class="ttl" x="195" y="44" text-anchor="middle">基于页码 / 偏移量</text>
+  <text class="mono sm" x="195" y="64" text-anchor="middle">?page=2&amp;pageSize=3</text>
+  <text class="sm" x="44" y="92">取第 1 页时：</text>
+  <rect class="bx-b" x="130" y="78" width="30" height="22" rx="4"/><text class="sm" x="145" y="94" text-anchor="middle">9</text>
+  <rect class="bx-b" x="164" y="78" width="30" height="22" rx="4"/><text class="sm" x="179" y="94" text-anchor="middle">8</text>
+  <rect class="bx-b" x="198" y="78" width="30" height="22" rx="4"/><text class="sm" x="213" y="94" text-anchor="middle">7</text>
+  <rect class="bx" x="238" y="78" width="30" height="22" rx="4"/><text class="sm" x="253" y="94" text-anchor="middle">6</text>
+  <rect class="bx" x="272" y="78" width="30" height="22" rx="4"/><text class="sm" x="287" y="94" text-anchor="middle">5</text>
+  <rect class="bx" x="306" y="78" width="30" height="22" rx="4"/><text class="sm" x="321" y="94" text-anchor="middle">4</text>
+  <text class="sm on-r" x="44" y="124">之后：</text>
+  <rect class="bx-r" x="96" y="110" width="30" height="22" rx="4"/><text class="sm on-r" x="111" y="126" text-anchor="middle">10</text>
+  <rect class="bx" x="130" y="110" width="30" height="22" rx="4"/><text class="sm" x="145" y="126" text-anchor="middle">9</text>
+  <rect class="bx" x="164" y="110" width="30" height="22" rx="4"/><text class="sm" x="179" y="126" text-anchor="middle">8</text>
+  <rect class="bx-b" x="198" y="110" width="30" height="22" rx="4"/><text class="sm on-r" x="213" y="126" text-anchor="middle" font-weight="700">7</text>
+  <rect class="bx-b" x="238" y="110" width="30" height="22" rx="4"/><text class="sm" x="253" y="126" text-anchor="middle">6</text>
+  <rect class="bx-b" x="272" y="110" width="30" height="22" rx="4"/><text class="sm" x="287" y="126" text-anchor="middle">5</text>
+  <text class="sm on-r" x="195" y="154" text-anchor="middle">新增了 10 → 第 2 页里又出现了 7（重复）</text>
+  <text class="sm on-r" x="195" y="172" text-anchor="middle">如果是删除，则会漏掉一条</text>
+  <text class="sm" x="195" y="198" text-anchor="middle">&#10003; 可以直接跳到第 N 页　&#10003; 实现简单</text>
+  <text class="sm" x="195" y="216" text-anchor="middle">&#10007; 数据库要先扫过前面所有页，越深越慢</text>
+
+  <rect class="bx-g" x="390" y="20" width="350" height="210" rx="12"/>
+  <text class="ttl on-g" x="565" y="44" text-anchor="middle">基于游标</text>
+  <text class="mono sm" x="565" y="64" text-anchor="middle">?next=xbzv237&amp;pageSize=3</text>
+  <text class="sm" x="414" y="92">取第 1 页时：</text>
+  <rect class="bx-b" x="500" y="78" width="30" height="22" rx="4"/><text class="sm" x="515" y="94" text-anchor="middle">9</text>
+  <rect class="bx-b" x="534" y="78" width="30" height="22" rx="4"/><text class="sm" x="549" y="94" text-anchor="middle">8</text>
+  <rect class="bx-b" x="568" y="78" width="30" height="22" rx="4"/><text class="sm" x="583" y="94" text-anchor="middle">7</text>
+  <text class="sm on-g" x="640" y="94">游标 → 7 之后</text>
+  <text class="sm" x="414" y="124">之后：</text>
+  <rect class="bx" x="466" y="110" width="30" height="22" rx="4"/><text class="sm" x="481" y="126" text-anchor="middle">10</text>
+  <rect class="bx" x="500" y="110" width="30" height="22" rx="4"/><text class="sm" x="515" y="126" text-anchor="middle">9</text>
+  <rect class="bx" x="534" y="110" width="30" height="22" rx="4"/><text class="sm" x="549" y="126" text-anchor="middle">8</text>
+  <rect class="bx" x="568" y="110" width="30" height="22" rx="4"/><text class="sm" x="583" y="126" text-anchor="middle">7</text>
+  <rect class="bx-g" x="608" y="110" width="30" height="22" rx="4"/><text class="sm" x="623" y="126" text-anchor="middle">6</text>
+  <rect class="bx-g" x="642" y="110" width="30" height="22" rx="4"/><text class="sm" x="657" y="126" text-anchor="middle">5</text>
+  <rect class="bx-g" x="676" y="110" width="30" height="22" rx="4"/><text class="sm" x="691" y="126" text-anchor="middle">4</text>
+  <text class="sm on-g" x="565" y="154" text-anchor="middle">新增了 10 → 下一页仍从 7 之后开始，不重不漏</text>
+  <text class="sm" x="565" y="198" text-anchor="middle">&#10003; 大数据集、深分页时快得多</text>
+  <text class="sm" x="565" y="216" text-anchor="middle">&#10007; 只能上一页/下一页　&#10007; 需要唯一且有序的数据</text>
+</svg>
+<figcaption>图 13-4　游标是一个只有服务端看得懂的不透明值，基于唯一且有序的数据（如自增 ID）。无序的 UUID 没法直接做游标</figcaption>
+</figure>
+
+<div class="box tip">
+  <div class="t">&#128161; 建议</div>
+  <p>出于性能考虑<strong>优先考虑游标分页</strong>，除非需求要求「跳到指定页」，或者数据/数据库不适合游标。和架构师一起决定。</p>
+</div>
+
+<h2 id="bulk">批量操作</h2>
+
+<p>
+  把一连串相似的调用合并成一次。把 100 笔交易标记为已核对：调用 100 次「更新交易」，还是调用 1 次「更新多笔交易」？
+  我们需要批量操作的理由，和需要「搜索」「列表」操作的理由是一样的。
+</p>
+
+<h3>请求的设计</h3>
+
+<p>把操作从<strong>单个元素</strong>提升到<strong>集合</strong>层面，最后那个路径参数挪个地方：</p>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>单个</th><th>批量</th><th>标识符去哪了</th></tr>
+  <tr>
+    <td>创建</td>
+    <td><code>POST /account-applications</code><br><code>{ "card": "gold" }</code></td>
+    <td><code>POST /account-applications</code><br><code>{ "data": [ {…}, {…} ] }</code></td>
+    <td>本来就没有</td>
+  </tr>
+  <tr>
+    <td>更新</td>
+    <td><code>PATCH /account-applications/123</code><br><code>{ "card": "metal" }</code></td>
+    <td><code>PATCH /account-applications</code><br><code>{ "data": [ { "id": 123, "card": "metal" }, … ] }</code></td>
+    <td>进入每个元素的<strong>数据</strong>里（<code>PUT</code> 同理）</td>
+  </tr>
+  <tr>
+    <td>删除</td>
+    <td><code>DELETE /account-applications/123</code></td>
+    <td><code>DELETE /account-applications?id=123,456</code></td>
+    <td>进入<strong>查询参数</strong>列表</td>
+  </tr>
+  <tr>
+    <td>读取</td>
+    <td><code>GET /account-applications/123</code></td>
+    <td><code>GET /account-applications?id=123,456</code> + <code>Prefer: model=complete</code></td>
+    <td>同上；配合模型选择</td>
+  </tr>
+</table>
+</div>
+
+<p>请求体用 <code>data</code> 数组，与列表响应的结构保持一致。</p>
+
+<h3>进一步优化</h3>
+<ul>
+  <li><strong>用筛选条件代替 ID 列表。</strong><code>DELETE /account-applications?created=lt:2024-05-04&amp;status=IN_PROGRESS</code>：取消所有 5 月 4 日前创建且仍在进行中的申请。</li>
+  <li><strong>相同的修改只发一次。</strong><code>PATCH /account-applications?created=lt:…&amp;status=IN_PROGRESS</code> + <code>{ "status": "STALLED" }</code>（不常见，但避免了重复数据）。</li>
+  <li><strong>最好的调用是不需要的调用。</strong>消费者为什么要自己清理过期的申请？让系统自动处理（比如发起申请时可以指定有效期）。</li>
+</ul>
+
+<h3>错误策略：全有或全无，还是允许部分成功</h3>
+
+<p>一个元素出错，整个请求就失败吗？这不是设计者能单独决定的，取决于业务和实现：</p>
+
+<div class="tw">
+<table>
+  <tr><th>场景</th><th>策略</th><th>理由</th></tr>
+  <tr><td>批量提交开户申请</td><td><strong>部分成功</strong></td><td>架构师说：第 100 个出错时回滚前 99 个，在现有系统里做不到。业务上也合适 —— 有效的申请越多越好，消费者只需重发有问题的那几个</td></tr>
+  <tr><td>批量转账</td><td><strong>全有或全无</strong></td><td>各笔转账之间可能相互依赖，必须保持整体的完整性</td></tr>
+</table>
+</div>
+
+<h3>部分成功的响应：207 Multi-Status</h3>
+
+<p>
+  <code>207 Multi-Status</code> 来自 HTTP 的扩展 WebDAV。它定义的响应格式是 XML 的、WebDAV 专用的，JSON API 没有对应的标准 —— 但可以借鉴其思路：
+  <strong>为每个元素返回「如果单独调用会得到的东西」</strong>：状态、头、体。
+</p>
+
+<div class="code" data-lang="http">
+<pre>
+POST /account-applications
+
+{ "data": [ { "card": "gold", ... }, { "card": "bleue", ... } ] }
+
+
+HTTP/1.1 207 Multi-Status
+
+{
+  "data": [
+    {
+      "status": 201,
+      "headers": { "Content-Type": "application/json", "Location": "/account-applications/123" },
+      "body": { "id": 123, "card": "gold", ... }
+    },
+    {
+      "status": 400,
+      "headers": { "Content-Type": "application/problem+json" },
+      "body": { "errors": [ { "source": { "pointer": "#/data/1/card" }, ... } ] }
+    }
+  ]
+}
+</pre>
+</div>
+
+<ul>
+  <li>响应里元素的<strong>顺序与请求一致</strong>；</li>
+  <li>错误里的指针以 <code>#/data/{序号}</code> 开头，指明是哪个元素的问题；</li>
+  <li>如果所有元素的状态都相同（全是 <code>201</code> 或全是 <code>400</code>），就直接返回那个状态，而不是 <code>207</code>。</li>
+</ul>
+
+<p>
+  全有或全无的操作，可以沿用同样的结构以保持一致；如果不关心每个元素各自的状态和头，也可以用更简单的设计：
+  成功时返回 <code>{ "data": [...] }</code>，失败时返回普通的错误格式、把所有元素的所有错误列在一起。
+  但要想清楚 —— 以后若再出现需要部分成功的批量操作，两种设计就不一致了。
+</p>
+
+<div class="tabs" data-title="批量创建：部分成功 + 207">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ValidationError
+
+app = FastAPI()
+MAX_BULK = 100
+
+class ApplicationCreation(BaseModel):
+    card: Literal["gold", "metal", "classic"]
+    email: EmailStr
+
+@app.post("/account-applications")
+async def create_applications(payload: dict):
+    items = payload.get("data", [])
+    if len(items) &gt; MAX_BULK:
+        return JSONResponse({"message": f"At most {MAX_BULK} applications per call"}, 400)
+
+    results = []
+    for index, item in enumerate(items):               # 顺序与请求保持一致
+        try:
+            created = applications.create(ApplicationCreation(**item))
+            results.append({
+                "status": 201,
+                "headers": {"Content-Type": "application/json",
+                            "Location": f"/account-applications/{created['id']}"},
+                "body": created,
+            })
+        except ValidationError as e:
+            results.append({
+                "status": 400,
+                "headers": {"Content-Type": "application/problem+json"},
+                "body": {"errors": [
+                    {"detail": err["msg"],
+                     "source": {"location": "body",
+                                "pointer": f"#/data/{index}/" + "/".join(map(str, err["loc"]))}}
+                    for err in e.errors()]},
+            })
+
+    statuses = {r["status"] for r in results}
+    # 所有元素状态相同就返回那个状态，否则 207
+    return JSONResponse({"data": results}, status_code=statuses.pop() if len(statuses) == 1 else 207)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono + Zod">
+<pre>
+import { Hono } from "hono";
+import { z } from "zod";
+
+const app = new Hono();
+const MAX_BULK = 100;
+
+const ApplicationCreation = z.object({
+  card: z.enum(["gold", "metal", "classic"]),
+  email: z.string().email(),
+});
+
+type ItemResult = { status: number; headers: Record&lt;string, string&gt;; body: unknown };
+
+app.post("/account-applications", async (c) =&gt; {
+  const items: unknown[] = (await c.req.json()).data ?? [];
+  if (items.length &gt; MAX_BULK) {
+    return c.json({ message: `At most ${MAX_BULK} applications per call` }, 400);
+  }
+
+  const results: ItemResult[] = items.map((item, index) =&gt; {   // 顺序与请求保持一致
+    const parsed = ApplicationCreation.safeParse(item);
+    if (!parsed.success) {
+      return {
+        status: 400,
+        headers: { "Content-Type": "application/problem+json" },
+        body: {
+          errors: parsed.error.issues.map((issue) =&gt; ({
+            detail: issue.message,
+            source: { location: "body", pointer: `#/data/${index}/${issue.path.join("/")}` },
+          })),
+        },
+      };
+    }
+    const created = applications.create(parsed.data);
+    return {
+      status: 201,
+      headers: { "Content-Type": "application/json", Location: `/account-applications/${created.id}` },
+      body: created,
+    };
+  });
+
+  const statuses = new Set(results.map((r) =&gt; r.status));
+  // 所有元素状态相同就返回那个状态，否则 207
+  const status = statuses.size === 1 ? [...statuses][0] : 207;
+  return c.json({ data: results }, status as 201 | 207 | 400);
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+@RestController
+public class BulkApplicationController {
+
+    private static final int MAX_BULK = 100;
+
+    record Bulk&lt;T&gt;(List&lt;T&gt; data) {}
+    record ItemResult(int status, Map&lt;String, String&gt; headers, Object body) {}
+
+    @PostMapping("/account-applications")
+    public ResponseEntity&lt;Bulk&lt;ItemResult&gt;&gt; createApplications(
+            @RequestBody Bulk&lt;ApplicationCreation&gt; payload) {
+        if (payload.data().size() &gt; MAX_BULK) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                "At most " + MAX_BULK + " applications per call");
+        }
+
+        List&lt;ItemResult&gt; results = new ArrayList&lt;&gt;();
+        for (int index = 0; index &lt; payload.data().size(); index++) {     // 顺序与请求保持一致
+            ApplicationCreation item = payload.data().get(index);
+            var violations = validator.validate(item);
+            if (!violations.isEmpty()) {
+                final int i = index;
+                var errors = violations.stream().map(v -&gt; Map.of(
+                    "detail", v.getMessage(),
+                    "source", Map.of("location", "body",
+                                     "pointer", "#/data/" + i + "/" + v.getPropertyPath()))).toList();
+                results.add(new ItemResult(400,
+                    Map.of("Content-Type", "application/problem+json"), Map.of("errors", errors)));
+            } else {
+                Application created = applications.create(item);
+                results.add(new ItemResult(201,
+                    Map.of("Content-Type", "application/json",
+                           "Location", "/account-applications/" + created.id()), created));
+            }
+        }
+
+        Set&lt;Integer&gt; statuses = results.stream().map(ItemResult::status).collect(Collectors.toSet());
+        // 所有元素状态相同就返回那个状态，否则 207
+        int status = statuses.size() == 1 ? statuses.iterator().next() : HttpStatus.MULTI_STATUS.value();
+        return ResponseEntity.status(status).body(new Bulk&lt;&gt;(results));
+    }
+}
+</pre>
+</div>
+</div>
+
+<h3>控制谁能用批量操作</h3>
+<p>
+  一次提交上百个开户申请对某个合作方有意义，对手机 App 则没有。两种隔离方式：
+  用一个行为调节型作用域（第 12 章），如 <code>account-application:create:bulk</code>，有它才允许一次提交多个；
+  或者单独开一个操作 <code>POST /account-applications/bulk</code>，用专门的作用域保护。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 批量处理可能很耗时</div>
+  <p>处理很多元素可能需要很长时间，这时一次同步调用就不合适了。第 14 章讲如何设计耗时长的操作。</p>
+</div>
+
+<h2 id="layer">另建一层专门优化的 API</h2>
+
+<p>
+  如果确实需要大刀阔斧的优化，而优化的结果是一堆只对某个消费者有意义的资源和操作，那就<strong>不要动通用的 API</strong>，在它上面另建一层。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="三层 API：体验层、业务层、系统层">
+  <rect class="bx-b" x="40" y="14" width="150" height="40" rx="8"/><text x="115" y="39" text-anchor="middle">手机 App</text>
+  <rect class="bx-b" x="210" y="14" width="150" height="40" rx="8"/><text x="285" y="39" text-anchor="middle">网站</text>
+  <rect class="bx-b" x="560" y="14" width="160" height="40" rx="8"/><text x="640" y="39" text-anchor="middle">合作方 / 其他系统</text>
+
+  <rect class="bx-p" x="20" y="84" width="360" height="56" rx="12"/>
+  <text class="ttl on-p" x="36" y="108">体验层 API（Experience）</text>
+  <text class="sm" x="36" y="126">为特定消费者聚合、优化；典型：BFF（Backend For Frontend）</text>
+
+  <rect class="bx-a" x="20" y="158" width="720" height="56" rx="12"/>
+  <text class="ttl on-a" x="36" y="182">业务层 API（Business）</text>
+  <text class="sm" x="36" y="200">代表组织的业务和领域，通用、可复用。理想情况下只有这一层 —— 本教程设计的就是它</text>
+
+  <rect class="bx-d" x="20" y="232" width="720" height="48" rx="12"/>
+  <text class="ttl" x="36" y="254">系统层 API（System）</text>
+  <text class="sm" x="36" y="270">商业软件、开源软件或遗留系统暴露的接口；暴露内部细节，需要专业知识，不应提供给非专家</text>
+
+  <path class="ln-b" d="M115 54 V82" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M285 54 V82" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M640 54 V156" marker-end="url(#ar-b)"/>
+  <path class="ln-p" d="M200 140 V156" marker-end="url(#ar-p)"/>
+  <path class="ln-a" d="M380 214 V230" marker-end="url(#ar-a)"/>
+</svg>
+<figcaption>图 13-5　常见的三层 API。BFF 通常由开发消费端的团队自己维护，也可以用 REST 以外的形式（如 GraphQL，见第 14 章）</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 分层需要纪律</div>
+  <p>
+    是否分层、怎么分，同样要和架构师讨论。层和组件多了之后，必须有章法地管理「什么放在哪一层」，保证调用路径最优、减少重复。
+    否则这种分布式系统无节制地生长，会变得低效、脆弱、难以维护 —— 与初衷正好相反。
+  </p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>高效的 API 让消费者、最终用户和提供者都受益：更快、更省电、数据量小、基础设施负载轻、成本低。</li>
+  <li>完成用例所需的调用（尤其是串行调用）要尽量少，处理的数据要尽量少。</li>
+  <li>先设计一个做对事、好用的 API，再提升效率。局部的小优化在规模上很可观。</li>
+  <li>因性能问题动设计之前，先确认 HTTP 2 已启用（或 HTTP 1.1 的压缩和长连接已打开），并找到真正的根因。</li>
+  <li>消费者达到限额时返回 <code>429</code> 和 <code>Retry-After</code>；在所有响应里提供限流信息头。</li>
+  <li>由提供者制定缓存策略（考虑数据的组成、易变性和使用场景），用 <code>Cache-Control</code> 告知消费者。</li>
+  <li>用条件请求（<code>ETag</code> + <code>If-None-Match</code> → <code>304 Not Modified</code>）让消费者只在数据变化时才下载。</li>
+  <li>可以让消费者通过内容协商或 <code>Prefer</code> 头选择返回的模型；用字段选择进一步减少数据。</li>
+  <li>考虑把反复出现的冗余信息放到专门的操作里。</li>
+  <li>用部分更新（<code>PATCH</code>）代替整体替换（<code>PUT</code>）以减少上行数据；优先使用简单、通行的 JSON Merge Patch。</li>
+  <li>页大小从 1 到一个高效的上限，默认值偏小；出于性能优先考虑游标分页。</li>
+  <li>提供批量操作：更新时把 ID 放进每个元素的数据里，删除时放进查询参数；也可以用筛选条件代替 ID。</li>
+  <li>根据业务和实现约束决定批量操作是全有或全无还是允许部分成功；后者返回 <code>207 Multi-Status</code>。</li>
+  <li>用行为调节型作用域或专门的操作来限制谁能做批量操作。</li>
+  <li>需要重度优化时，在业务 API 之上建一层体验 API，让业务 API 保持通用。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      在线学习平台有几万门课程。用户按领域、描述和评分搜索。<code>GET /courses</code> 返回<em>全部</em>课程，每项只有 <code>id</code> 和 <code>name</code>；<code>GET /courses/{courseId}</code> 返回课程的全部信息，包括完整的 <code>lessons</code> 列表和领域的长描述。有什么效率问题？
+      <details class="ans"><summary>参考答案</summary>
+        ① 列表不分页、不能筛选：每次返回几万条 → 加上 <code>domain</code>、<code>stars</code>、<code>q</code> 等筛选和分页。
+        ② 列表里的摘要缺少用户搜索时关心的数据（领域、评分、简介）：为了展示结果，前端得为每门课再调一次读取 → 把这些放进摘要模型。
+        ③ 读取操作返回的数据过多：搜索时根本不需要 <code>lessons</code>（应通过 <code>GET /courses/{id}/lessons</code> 单独获取）；领域的长描述在每门课里重复 → 只留 <code>code</code> 和 <code>name</code>，详情通过 <code>GET /domains</code> 获取并缓存。
+      </details>
+    </li>
+    <li>
+      图书馆 API 的 <code>GET /books</code> 按可借状态、书名、作者等搜索。新书每月 12 日 00:00 上架；任何一本书随时可能被借走或归还，改变其可借状态。1 月 11 日上午 11 点的一次调用应返回什么缓存相关的头？
+      <details class="ans"><summary>参考答案</summary>
+        可借状态随时会变，所以不能给一个固定的 <code>max-age</code>（哪怕离新书上架只剩 13 小时）。
+        应返回 <code>Cache-Control: no-cache</code>（可以缓存，但用前必须校验）和一个 <code>ETag</code>；消费者之后用 <code>If-None-Match</code> 做条件请求，没变就得到 <code>304</code>。
+        如果支持内容协商，再加 <code>Vary</code>。
+      </details>
+    </li>
+    <li>
+      社交网络的「时间线」操作 <code>GET /threads</code> 有 <code>q</code>、<code>next</code>、<code>limit</code> 三个查询参数，其中 <code>limit</code> 的 <code>default: 10000</code>、<code>maximum: 1000000</code>。有效率问题吗？
+      <details class="ans"><summary>参考答案</summary>
+        用游标分页是对的。但默认页大小 10000 太离谱：大多数调用用的是默认值，绝大部分数据没人看；最大值 100 万更可能直接拖垮服务器。
+        改成贴合实际使用的值，例如 <code>minimum: 1</code>、<code>default: 20</code>、<code>maximum: 100</code>（仓库的 <code>13. …/Listing 13.3</code> 是原始定义）。
+      </details>
+    </li>
+    <li>把本章的「校验式缓存」客户端代码跑起来，对着一个返回 <code>ETag</code> 的公开 API（比如 GitHub API）连续请求两次，观察第二次的状态码。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

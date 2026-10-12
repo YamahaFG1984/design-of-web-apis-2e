@@ -1,0 +1,854 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 4 章 · 用 HTTP 表示操作 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="4">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 4 章</span>
+<h1>用 HTTP 表示操作</h1>
+<p class="lede">
+  上一章我们用自然语言找出了资源、动作、输入和输出。这一章把它们逐项翻译成 HTTP：
+  资源变成<strong>路径</strong>，动作变成<strong>方法</strong>，输出类型变成<strong>状态码</strong>，输入输出数据放进请求和响应里<strong>合适的位置</strong>。
+  最后再看看那些不属于增删改查的「做某事」操作怎么处理，以及 REST 到底是什么。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>设计唯一、有意义、体现层级关系的资源路径</li>
+    <li>为五种典型操作选择 HTTP 方法（<code>POST</code> / <code>GET</code> / <code>PUT</code> / <code>PATCH</code> / <code>DELETE</code>）</li>
+    <li>知道输入该放在路径、查询参数、请求头还是请求体里</li>
+    <li>用 <code>2XX</code> / <code>4XX</code> / <code>5XX</code> 状态码表示成功与失败，并借此补全遗漏的错误</li>
+    <li>用三种方式表示「结账」这类非 CRUD 操作</li>
+    <li>了解 REST 架构风格的六条约束</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="overview">目标：一次完整的 HTTP 表示长什么样</h2>
+
+<p>先看终点。「在目录中搜索商品」最终会变成这样：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="GET /products?type=BD 请求各部分的含义，以及 200 OK 响应各部分的含义">
+  <text class="ttl" x="20" y="24">HTTP 请求</text>
+  <rect class="bx" x="20" y="36" width="340" height="50" rx="8"/>
+  <text class="mono on-a" x="36" y="67" font-weight="700" style="font-size:15px">GET</text>
+  <text class="mono on-b" x="76" y="67" style="font-size:15px">/products</text>
+  <text class="mono on-p" x="158" y="67" style="font-size:15px">?type=BD</text>
+
+  <path class="ln-a" d="M50 86 V120"/>
+  <rect class="bx-a" x="20" y="120" width="96" height="46" rx="8"/>
+  <text class="ttl on-a" x="68" y="140" text-anchor="middle">方法</text>
+  <text class="sm" x="68" y="157" text-anchor="middle">动作「搜索」</text>
+
+  <path class="ln-b" d="M118 86 V104 H172 V120"/>
+  <rect class="bx-b" x="126" y="120" width="106" height="46" rx="8"/>
+  <text class="ttl on-b" x="179" y="140" text-anchor="middle">路径</text>
+  <text class="sm" x="179" y="157" text-anchor="middle">资源「商品目录」</text>
+
+  <path class="ln-p" d="M196 86 V96 H300 V120"/>
+  <rect class="bx-p" x="242" y="120" width="118" height="46" rx="8"/>
+  <text class="ttl on-p" x="301" y="140" text-anchor="middle">查询参数</text>
+  <text class="sm" x="301" y="157" text-anchor="middle">输入「筛选条件」</text>
+
+  <text class="ttl" x="400" y="24">HTTP 响应</text>
+  <rect class="bx" x="400" y="36" width="340" height="130" rx="8"/>
+  <text class="mono on-g" x="416" y="62" font-weight="700" style="font-size:15px">200 OK</text>
+  <text class="mono sm" x="416" y="92">[</text>
+  <text class="mono sm" x="416" y="108">  { "id": 12345, "name": "Cowboy Bebop",</text>
+  <text class="mono sm" x="416" y="124">    "type": "BD" }, ...</text>
+  <text class="mono sm" x="416" y="140">]</text>
+
+  <path class="ln-g" d="M440 166 V190"/>
+  <rect class="bx-g" x="400" y="190" width="160" height="46" rx="8"/>
+  <text class="ttl on-g" x="480" y="210" text-anchor="middle">状态码</text>
+  <text class="sm" x="480" y="227" text-anchor="middle">输出类型「成功」</text>
+  <path class="ln" d="M660 166 V190"/>
+  <rect class="bx" x="580" y="190" width="160" height="46" rx="8"/>
+  <text class="ttl" x="660" y="210" text-anchor="middle">响应体</text>
+  <text class="sm" x="660" y="227" text-anchor="middle">输出数据「商品信息」</text>
+</svg>
+<figcaption>图 4-1　本章要做的五件事：路径、方法、输入位置、状态码、输出位置。具体数据长什么样（商品有哪些字段）留给下一章</figcaption>
+</figure>
+
+<h2 id="paths">用路径表示资源</h2>
+
+<h3>路径的基本规则</h3>
+
+<p>
+  在 <code>https://api.server.com/path</code> 里，<code>/path</code> 就是资源路径。
+</p>
+<ul>
+  <li>一条路径<strong>唯一标识</strong>一个资源，像文件系统里的文件路径（但不同的路径可以通向同一个资源）。</li>
+  <li>路径<strong>不反映</strong>底层数据。<code>/something</code> 既不对应服务器上的 <code>/something</code> 文件夹，也不对应 <code>something</code> 数据库表。</li>
+  <li>路径由斜杠分隔的<strong>段</strong>组成，可以包含<strong>路径参数</strong>：文档里写作 <code>/products/{productId}</code>，实际请求时填入值 <code>/products/123456</code>。</li>
+</ul>
+
+<div class="box tip">
+  <div class="t">&#128161; 别用结尾斜杠</div>
+  <p><code>/path/</code> 这样的结尾斜杠会在代码路由或网络设备上引发诡异的 Bug，让人调试好几个小时。统一用 <code>/path</code>。</p>
+</div>
+
+<h3>让路径有意义</h3>
+
+<p>从 REST 的角度，路径只要唯一就行。但我们是给人用的 —— 对「目录」这个资源：</p>
+
+<div class="tw">
+<table>
+  <tr><th>路径</th><th>思路</th><th>唯一</th><th>有意义</th></tr>
+  <tr><td><code>/xyz</code></td><td>随便起</td><td>&#10003;</td><td>&#10007; 完全看不出是什么</td></tr>
+  <tr><td><code>/cat</code></td><td>缩写</td><td>&#10003;</td><td>&#10007; 猫？六个月后自己都忘了</td></tr>
+  <tr><td><code>/catalog</code></td><td>资源名</td><td>&#10003;</td><td>&#10003;</td></tr>
+  <tr><td><code>/products</code></td><td>资源的内容（目录就是商品的集合）</td><td>&#10003;</td><td>&#10003;</td></tr>
+</table>
+</div>
+
+<h3>用路径参数定位具体元素、用层级体现关系</h3>
+
+<p>单个「商品」无法只靠名字来唯一标识。上一章发现，所有针对商品的操作都需要「商品引用」这个输入 —— 它就是路径参数的来源。</p>
+
+<div class="tw">
+<table>
+  <tr><th>路径（<code>123456</code> 是商品引用）</th><th>唯一</th><th>有意义</th><th>体现层级</th><th>问题</th></tr>
+  <tr><td><code>/product</code></td><td>&#10007;</td><td>&#10003;</td><td>—</td><td>不知道是哪件商品</td></tr>
+  <tr><td><code>/123456</code></td><td>&#10003;</td><td>&#10007;</td><td>—</td><td>将来的 <code>/{supplierId}</code> 会和它撞车</td></tr>
+  <tr><td><code>/product-123456</code></td><td>&#10003;</td><td>&#10003;</td><td>&#10007;</td><td>看不出它属于目录</td></tr>
+  <tr><td><code>/123456/catalog</code></td><td>&#10003;</td><td>&#10003;</td><td>&#10007; 反了</td><td>子在父之前</td></tr>
+  <tr><td><code>/catalog/123456</code></td><td>&#10003;</td><td>&#10003;</td><td>&#10003;</td><td>「目录包含商品 123456」</td></tr>
+  <tr><td><strong><code>/products/123456</code></strong></td><td>&#10003;</td><td>&#10003;</td><td>&#10003;</td><td>「商品 123456 属于商品列表」</td></tr>
+</table>
+</div>
+
+<p>
+  HTTP 路径天然是层级的：<code>/parent/child</code> 表示父包含子。<strong>最后一段</strong>决定了这条路径本质上是什么
+  （<code>/w/h/a/t/e/v/e/r/products</code> 指的还是商品），前面的段提供上下文：
+  <code>/merchants/{merchantId}/products/{productId}</code> 是「某商家目录里的某件商品」。
+</p>
+
+<h3>集合与元素：最通用的模式</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 170" role="img" aria-label="集合资源用 /products 表示，其中的元素在集合路径后拼接标识符">
+  <rect class="bx-b" x="20" y="24" width="250" height="52" rx="10"/>
+  <text class="ttl on-b" x="36" y="46">集合资源：目录</text>
+  <text class="sm" x="36" y="64">包含多个商品</text>
+  <path class="ln-b" d="M270 50 H398" marker-end="url(#ar-b)"/>
+  <rect class="bx" x="400" y="24" width="340" height="52" rx="10"/>
+  <text class="mono on-b" x="418" y="56" style="font-size:16px">/products</text>
+  <text class="sm" x="726" y="56" text-anchor="end">「我是商品列表」</text>
+
+  <rect class="bx-g" x="20" y="96" width="250" height="52" rx="10"/>
+  <text class="ttl on-g" x="36" y="118">元素资源：商品</text>
+  <text class="sm" x="36" y="136">属于目录</text>
+  <path class="ln-g" d="M270 122 H398" marker-end="url(#ar-g)"/>
+  <rect class="bx" x="400" y="96" width="340" height="52" rx="10"/>
+  <text class="mono on-b" x="418" y="128" style="font-size:16px">/products</text>
+  <text class="mono on-g" x="506" y="128" style="font-size:16px">/{productId}</text>
+  <text class="sm" x="726" y="128" text-anchor="end">「我是一件商品」</text>
+  <text class="sm" x="464" y="164" text-anchor="middle">集合里元素的类型</text>
+  <text class="sm" x="566" y="164" text-anchor="middle">元素的标识符</text>
+</svg>
+<figcaption>图 4-2　集合用表示其元素类型的名词（通常是复数），元素路径 = 集合路径 + 标识符。就像文件夹和文件</figcaption>
+</figure>
+
+<p>
+  这个模式在 REST API 里被广泛采用。它唯一、有意义、体现关系，而且消费者只要把 ID 拼到集合路径后面就得到元素路径。
+  （用单数 <code>/product</code> 和 <code>/product/{id}</code> 也是合法的，关键是一致。）
+</p>
+
+<h2 id="methods">用 HTTP 方法表示动作</h2>
+
+<p>REST API 用五个 HTTP 方法。拿不准时查这张表：</p>
+
+<div class="tw">
+<table>
+  <tr><th>方法</th><th>HTTP 含义</th><th>CRUD</th><th>适用的动作（举例）</th></tr>
+  <tr><td><code>POST</code></td><td>创建；更广义地说是「按资源自身的含义处理这个请求」</td><td>C，以及非 CRUD</td><td>创建、添加、开始、保存、发送；执行、做某事</td></tr>
+  <tr><td><code>GET</code></td><td>读取</td><td>R</td><td>读取、获取、搜索、筛选、列出、下载</td></tr>
+  <tr><td><code>PUT</code></td><td>替换；不存在则创建（upsert）</td><td>U、C</td><td>替换、修改、更新、编辑；也可用于创建</td></tr>
+  <tr><td><code>PATCH</code></td><td>（部分）更新</td><td>U</td><td>修改、更新、编辑</td></tr>
+  <tr><td><code>DELETE</code></td><td>删除</td><td>D</td><td>删除、取消、关闭、结束、停止</td></tr>
+</table>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; PUT 和 PATCH 的区别</div>
+  <p>
+    从消费者角度，「只改一部分」用哪个都能做到：用 <code>PUT</code> 时把<strong>整个资源</strong>（含改动）发回去；
+    用 <code>PATCH</code> 时<strong>只发改动的部分</strong>。现阶段推荐默认用 <code>PUT</code> —— 适用面广，实现也更简单。
+  </p>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 方法描述的是接口，不是实现</div>
+  <p>
+    <code>DELETE /something</code> 背后可以是物理删除，也可以只是把一个标记位改掉（软删除）。
+    但实现必须遵守 HTTP 方法的「安全」「幂等」等特性（第 12 章会讲）。
+  </p>
+</div>
+
+<h3>为五个操作选方法</h3>
+
+<p>
+  规则：<strong>同一个资源上，每个 HTTP 方法只能定义一次</strong>。如果出现冲突（比如同一路径上有两个都想用 <code>GET</code> 的操作），
+  通常说明资源或操作识别错了 —— 比如第 2 章如果没把「搜索要买的商品」和「查找相似商品」合并，这里就会撞车。
+</p>
+
+<ul>
+  <li><strong>搜索</strong>本质是读 → <code>GET /products</code></li>
+  <li><strong>获取</strong> → <code>GET /products/{productId}</code></li>
+  <li><strong>移除</strong>是删除 → <code>DELETE /products/{productId}</code></li>
+  <li><strong>修改</strong>是更新 → <code>PUT</code> 或 <code>PATCH /products/{productId}</code></li>
+  <li>
+    <strong>添加</strong>是创建 → <code>POST /products</code>。
+    能不能用 <code>PUT</code>？<code>PUT /products</code> 会替换整个目录，不是我们要的；
+    必须是 <code>PUT /products/{productId}</code>，这要求<em>消费者自己提供 ID</em>。当 ID 是事先存在且全球唯一的（如图书的 ISBN）时可行；
+    如果 ID 是系统生成的随机数，就用 <code>POST</code> 让系统来生成，避免 ID 冲突。
+  </li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="五种典型操作到 HTTP 方法和路径的映射">
+  <rect class="bx-b" x="250" y="20" width="260" height="88" rx="12"/>
+  <text class="mono on-b" x="380" y="52" text-anchor="middle" style="font-size:16px">/products</text>
+  <text class="sm" x="380" y="74" text-anchor="middle">集合</text>
+
+  <rect class="bx-g" x="250" y="138" width="260" height="92" rx="12"/>
+  <text class="mono on-g" x="380" y="172" text-anchor="middle" style="font-size:16px">/products/{productId}</text>
+  <text class="sm" x="380" y="194" text-anchor="middle">元素</text>
+
+  <rect class="bx" x="20" y="24" width="170" height="34" rx="8"/>
+  <text class="mono on-a" x="34" y="46" font-weight="700">POST</text><text x="84" y="46">创建一个元素</text>
+  <rect class="bx" x="20" y="68" width="170" height="34" rx="8"/>
+  <text class="mono on-a" x="34" y="90" font-weight="700">GET</text><text x="84" y="90">列出 / 搜索</text>
+  <path class="ln-b" d="M190 41 H248" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M190 85 H248" marker-end="url(#ar-b)"/>
+
+  <rect class="bx" x="570" y="130" width="170" height="30" rx="8"/>
+  <text class="mono on-a" x="584" y="150" font-weight="700">GET</text><text x="650" y="150">读取</text>
+  <rect class="bx" x="570" y="168" width="170" height="30" rx="8"/>
+  <text class="mono on-a" x="584" y="188" font-weight="700">PUT/PATCH</text><text x="668" y="188">更新</text>
+  <rect class="bx" x="570" y="206" width="170" height="30" rx="8"/>
+  <text class="mono on-a" x="584" y="226" font-weight="700">DELETE</text><text x="650" y="226">删除</text>
+  <path class="ln-g" d="M570 145 H512" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M570 183 H512" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M570 221 H512" marker-end="url(#ar-g)"/>
+
+  <rect class="bx-d" x="20" y="168" width="170" height="30" rx="8"/>
+  <text class="mono" x="34" y="188" font-weight="700">PUT</text><text class="lbl" x="70" y="188">创建（自带 ID 时）</text>
+  <path class="ln-d" d="M190 183 H248" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 4-3　记住这张图，绝大多数 REST 操作都是它的变体</figcaption>
+</figure>
+
+<h2 id="inputs">输入数据放在请求的哪里</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="HTTP 请求中可以放数据的四个位置：路径参数、查询参数、请求头、请求体">
+  <rect class="bx" x="20" y="30" width="430" height="200" rx="10"/>
+  <text class="mono" x="40" y="62" style="font-size:14px"><tspan class="on-a" font-weight="700">PUT</tspan> /products/<tspan class="on-g" font-weight="700">123456</tspan>?<tspan class="on-p" font-weight="700">dryRun=true</tspan></text>
+  <text class="mono" x="40" y="92" style="font-size:14px"><tspan class="on-b" font-weight="700">Content-Type: application/json</tspan></text>
+  <text class="mono" x="40" y="112" style="font-size:14px"><tspan class="on-b" font-weight="700">Accept-Language: zh-CN</tspan></text>
+  <path class="ln-d" d="M40 130 H430"/>
+  <text class="mono" x="40" y="156" style="font-size:14px">{</text>
+  <text class="mono" x="40" y="176" style="font-size:14px">  "name": "Cowboy Bebop",</text>
+  <text class="mono" x="40" y="196" style="font-size:14px">  "price": 59.9</text>
+  <text class="mono" x="40" y="216" style="font-size:14px">}</text>
+
+  <rect class="bx-g" x="490" y="30" width="250" height="42" rx="8"/>
+  <text class="ttl on-g" x="504" y="50">路径参数</text><text class="sm" x="504" y="66">资源标识符：是哪一个</text>
+  <rect class="bx-p" x="490" y="80" width="250" height="42" rx="8"/>
+  <text class="ttl on-p" x="504" y="100">查询参数</text><text class="sm" x="504" y="116">资源修饰符：?a=1&amp;b=2，顺序无关</text>
+  <rect class="bx-b" x="490" y="130" width="250" height="42" rx="8"/>
+  <text class="ttl on-b" x="504" y="150">请求头</text><text class="sm" x="504" y="166">关于请求的元数据，优先用标准头</text>
+  <rect class="bx" x="490" y="180" width="250" height="50" rx="8"/>
+  <text class="ttl" x="504" y="200">请求体</text><text class="sm" x="504" y="216">资源的表示（representation）</text>
+  <text class="sm on-r" x="504" y="226" style="font-size:10px"> </text>
+
+  <path class="ln-g" d="M256 50 C340 20 440 30 488 46" marker-end="url(#ar-g)"/>
+  <path class="ln-p" d="M372 66 C420 90 450 96 488 100" marker-end="url(#ar-p)"/>
+  <path class="ln-b" d="M300 104 C380 130 440 146 488 150" marker-end="url(#ar-b)"/>
+  <path class="ln" d="M230 186 C340 200 420 204 488 204" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 4-4　请求里的四个位置。请求体只有 <code>POST</code>、<code>PUT</code>、<code>PATCH</code> 能用，<code>GET</code> 和 <code>DELETE</code> 不带请求体</figcaption>
+</figure>
+
+<p>放哪里，取决于 HTTP 方法和<strong>这份数据的性质</strong>。输入分三类：</p>
+
+<div class="tw">
+<table>
+  <tr><th>数据性质</th><th>含义</th><th>例子</th><th>位置</th></tr>
+  <tr>
+    <td><span class="tag-g">资源标识符</span></td>
+    <td>帮助确定操作作用于<strong>哪个资源</strong></td>
+    <td>商品引用</td>
+    <td><strong>路径参数</strong></td>
+  </tr>
+  <tr>
+    <td><span class="tag-b">资源表示</span></td>
+    <td>要创建或更新的资源<strong>数据本身</strong></td>
+    <td>商品信息、修改后的商品信息</td>
+    <td><strong>请求体</strong></td>
+  </tr>
+  <tr>
+    <td><span class="tag-p">资源修饰符</span></td>
+    <td><strong>调整</strong>返回的数据，但返回的仍是同一种业务实体</td>
+    <td>筛选条件</td>
+    <td><strong>查询参数</strong>（除非有对应的标准 HTTP 头）</td>
+  </tr>
+</table>
+</div>
+
+<h3>为什么筛选条件不放进路径</h3>
+
+<p>
+  假设有「类型」和「描述」两个筛选条件。写成 <code>/products/{type}/{description}</code> 会有两个问题：
+  路径参数是<strong>必填</strong>的，消费者就没法只按类型搜、或者不带条件列出全部；
+  而且类型和描述之间没有层级关系，不适合放进层级化的路径。
+  所以是 <code>/products?type=book&amp;description=design</code>。
+</p>
+
+<p>
+  换个角度：<code>GET /products</code> 和 <code>GET /products?type=book</code> 在 HTTP 层面是两个不同的资源（路径 + 查询共同标识资源），
+  但它们指向的是<strong>同一个 API 资源</strong>「目录」。筛选条件改变了返回的内容，却没改变它的性质。
+</p>
+
+<h3>标识符还是修饰符？</h3>
+
+<p>
+  同一个东西在不同场合可以是不同的性质。「分类引用」在读取某个分类时是标识符（<code>/categories/{categoryId}</code>）；
+  在搜索商品时是修饰符（<code>/products?category=…</code>），因为不提供它照样能搜。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 别因为「能写出这条路径」就多加一个操作</div>
+  <p>
+    你可能会想：分类是个明确的实体，那 <code>GET /categories/{categoryId}/products</code> 也该有吧？
+    先问：「搜索某分类的商品」是之前识别出的能力吗？还是我们在照着「分类页」这个 UI 画 API？
+    一个带筛选条件的通用 <code>GET /products</code> 就够了。
+    <code>GET /suppliers/{supplierId}/products</code> 则可能不同 —— 「供应商的商品」也许是从另一个视角看的不同数据 —— 但同样要有对应的能力才加。
+  </p>
+</div>
+
+<h2 id="status">用状态码表示输出类型</h2>
+
+<p>
+  HTTP 状态由一个三位数的<strong>代码</strong>和一段<strong>原因短语</strong>组成，比如 <code>404 Not Found</code>。
+  代码按首位分成几类，大多数 API 用其中三类：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="HTTP 状态码的三个主要类别：2XX 成功、4XX 客户端错误、5XX 服务端错误">
+  <rect class="bx-g" x="20" y="24" width="226" height="136" rx="12"/>
+  <text class="mono on-g" x="133" y="58" text-anchor="middle" font-weight="700" style="font-size:22px">2XX</text>
+  <text class="ttl on-g" x="133" y="82" text-anchor="middle">成功</text>
+  <text class="sm" x="133" y="104" text-anchor="middle">服务端成功处理了请求</text>
+  <text class="mono sm" x="133" y="128" text-anchor="middle">200 OK · 201 Created</text>
+  <text class="mono sm" x="133" y="146" text-anchor="middle">204 No Content</text>
+
+  <rect class="bx-a" x="267" y="24" width="226" height="136" rx="12"/>
+  <text class="mono on-a" x="380" y="58" text-anchor="middle" font-weight="700" style="font-size:22px">4XX</text>
+  <text class="ttl on-a" x="380" y="82" text-anchor="middle">客户端（消费者）的错</text>
+  <text class="sm" x="380" y="104" text-anchor="middle">数据有误、缺字段、无权限…</text>
+  <text class="mono sm" x="380" y="128" text-anchor="middle">400 Bad Request</text>
+  <text class="mono sm" x="380" y="146" text-anchor="middle">404 Not Found</text>
+
+  <rect class="bx-r" x="514" y="24" width="226" height="136" rx="12"/>
+  <text class="mono on-r" x="627" y="58" text-anchor="middle" font-weight="700" style="font-size:22px">5XX</text>
+  <text class="ttl on-r" x="627" y="82" text-anchor="middle">服务端（提供者）的错</text>
+  <text class="sm" x="627" y="104" text-anchor="middle">代码 Bug、数据库连不上…</text>
+  <text class="mono sm" x="627" y="128" text-anchor="middle">500 Internal Server Error</text>
+</svg>
+<figcaption>图 4-5　类别系统的好处：即使不认识 <code>413</code>，看到 4 开头也知道是自己（消费者）的问题</figcaption>
+</figure>
+
+<p>选状态码看三点：输出是成功还是错误；如果是错误，<strong>是谁造成的</strong>；以及请求用的是什么方法（方法的规范文档里通常有推荐）。</p>
+
+<h3>成功</h3>
+
+<div class="tw">
+<table>
+  <tr><th>操作</th><th>状态码</th><th>说明</th></tr>
+  <tr><td>读取 <code>GET</code></td><td><code>200 OK</code></td><td></td></tr>
+  <tr><td>搜索 <code>GET</code></td><td><code>200 OK</code></td><td>没搜到也是 <code>200</code>，返回空列表。这样找到和没找到的处理逻辑一致</td></tr>
+  <tr><td>创建 <code>POST</code>（或 <code>PUT</code>）</td><td><code>201 Created</code></td><td>用 <code>PUT</code> 创建时，消费者可以借此区分是新建（<code>201</code>）还是更新（<code>200</code>）</td></tr>
+  <tr><td>更新 <code>PUT</code>/<code>PATCH</code></td><td><code>200 OK</code> 或 <code>204 No Content</code></td><td>返回更新后的资源用 <code>200</code>（更常见）；不返回数据用 <code>204</code></td></tr>
+  <tr><td>删除 <code>DELETE</code></td><td><code>204 No Content</code></td><td>如果要返回一些状态数据则用 <code>200</code>；如果只是「已受理、稍后执行」用 <code>202 Accepted</code>（第 14 章）</td></tr>
+</table>
+</div>
+
+<h3>错误，以及借机查漏</h3>
+
+<p>
+  需求分析时的关注点在业务上，错误列得不全是正常的。选状态码正是补漏的好时机，三条检查规则：
+</p>
+
+<ol>
+  <li>凡是有<strong>查询参数或请求体</strong>输入的操作，都要处理「输入缺失或无效」→ <code>400 Bad Request</code>。<br>
+      <em>补上：</em>「搜索商品」的筛选条件可能写错；「修改商品」的商品信息可能有误。</li>
+  <li>凡是路径里有<strong>路径参数</strong>的操作，都要处理「资源不存在」→ <code>404 Not Found</code>。</li>
+  <li><strong>所有</strong>操作都要处理「意外的服务端错误」→ <code>500 Internal Server Error</code>。</li>
+</ol>
+
+<div class="box warn">
+  <div class="t">&#9888; 两个常见错误</div>
+  <p>
+    <strong>别把 <code>404</code> 和 <code>204</code> 搞混。</strong>读取一件不存在的商品返回 <code>204</code> 是错的 —— 那表示「商品存在，但没有内容」。<br>
+    <strong>别自创状态码。</strong>用未分配的代码（比如 <code>455</code>）只会带来兼容性问题和困惑。拿不准就用该类别的 <code>X00</code>。
+  </p>
+</div>
+
+<h2 id="outputs">输出数据放在响应的哪里</h2>
+
+<p>响应的结构和请求类似，只是第一行换成了状态。放数据的位置只有两个：<strong>响应头</strong>和<strong>响应体</strong>。</p>
+
+<p>HTTP 的规范还帮我们发现了几处缺失的输出数据：</p>
+
+<ul>
+  <li><code>POST</code> 创建后，应返回被创建的资源（或至少足以再次取回它的信息）。而且 <code>201 Created</code> 要求在 <strong><code>Location</code> 响应头</strong>里给出新资源的 URL。</li>
+  <li>「修改商品」既然选了 <code>200</code>，就该返回更新后的商品。</li>
+  <li>「没有匹配的商品」返回 <code>200</code>，响应体里放一个空列表。</li>
+  <li>所有错误都应在响应体里返回<strong>错误信息</strong> —— 光有状态码往往不够（第 9 章细讲）。</li>
+</ul>
+
+<h3>最终的操作表</h3>
+
+<div class="tw">
+<table>
+  <tr><th>操作</th><th>方法与路径</th><th>输入（位置）</th><th>输出</th><th>状态码</th><th>数据（位置）</th></tr>
+  <tr><td rowspan="2">把商品加入目录</td><td rowspan="2"><code>POST /products</code></td><td rowspan="2">商品信息（body）</td>
+      <td>商品已加入</td><td><code>201</code></td><td>商品信息（body）<br>商品 URL（<code>Location</code> 头）</td></tr>
+  <tr><td>商品信息有误</td><td><code>400</code></td><td>错误信息（body）</td></tr>
+  <tr><td rowspan="3">搜索商品</td><td rowspan="3"><code>GET /products</code></td><td rowspan="3">筛选条件（query）</td>
+      <td>找到匹配的商品</td><td><code>200</code></td><td>商品列表（body）</td></tr>
+  <tr><td>没有匹配的商品</td><td><code>200</code></td><td>空列表（body）</td></tr>
+  <tr><td>筛选条件有误</td><td><code>400</code></td><td>错误信息（body）</td></tr>
+  <tr><td rowspan="2">获取商品详情</td><td rowspan="2"><code>GET /products/{productId}</code></td><td rowspan="2">商品引用（path）</td>
+      <td>找到商品</td><td><code>200</code></td><td>商品信息（body）</td></tr>
+  <tr><td>商品不存在</td><td><code>404</code></td><td>错误信息（body）</td></tr>
+  <tr><td rowspan="3">修改商品</td><td rowspan="3"><code>PUT</code> / <code>PATCH /products/{productId}</code></td><td rowspan="3">商品引用（path）<br>修改后的信息（body）</td>
+      <td>商品已修改</td><td><code>200</code></td><td>商品信息（body）</td></tr>
+  <tr><td>商品不存在</td><td><code>404</code></td><td>错误信息（body）</td></tr>
+  <tr><td>商品信息有误</td><td><code>400</code></td><td>错误信息（body）</td></tr>
+  <tr><td rowspan="2">从目录移除商品</td><td rowspan="2"><code>DELETE /products/{productId}</code></td><td rowspan="2">商品引用（path）</td>
+      <td>商品已移除</td><td><code>204</code></td><td>—</td></tr>
+  <tr><td>商品不存在</td><td><code>404</code></td><td>错误信息（body）</td></tr>
+  <tr><td>所有操作</td><td></td><td></td><td>意外的服务端错误</td><td><code>500</code></td><td>错误信息（body）</td></tr>
+</table>
+</div>
+
+<h3>把这张表实现出来</h3>
+
+<p>
+  下面用三种主流框架把上表原样实现一遍（用内存里的字典代替数据库）。
+  读的时候请把注意力放在<strong>设计如何映射到代码</strong>上：路径、方法、状态码、<code>Location</code> 头、错误体 —— 每一处都能在表里找到对应的格子。
+</p>
+
+<div class="tabs" data-title="五个典型操作的完整实现">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+from uuid import uuid4
+from fastapi import FastAPI, HTTPException, Response, status
+from pydantic import BaseModel
+
+app = FastAPI()
+db: dict[str, dict] = {}                      # 假装这是数据库
+
+class ProductInfo(BaseModel):                 # 资源表示 → 请求体
+    name: str
+    type: str
+    price: float
+
+# 创建：POST 集合 → 201 + Location 头 + 响应体
+@app.post("/products", status_code=status.HTTP_201_CREATED)
+def add_product(info: ProductInfo, response: Response):
+    product_id = uuid4().hex[:8]              # ID 由系统生成，所以用 POST 而不是 PUT
+    db[product_id] = {"id": product_id, **info.model_dump()}
+    response.headers["Location"] = f"/products/{product_id}"
+    return db[product_id]
+    # 商品信息有误时，FastAPI 会根据 ProductInfo 自动返回 4XX
+
+# 搜索：GET 集合，筛选条件 → 查询参数；没找到也是 200 + 空列表
+@app.get("/products")
+def search_products(type: str | None = None):
+    return [p for p in db.values() if type is None or p["type"] == type]
+
+# 读取：GET 元素，资源标识符 → 路径参数
+@app.get("/products/{product_id}")
+def get_product(product_id: str):
+    if product_id not in db:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Product not found")
+    return db[product_id]
+
+# 更新：PUT 元素 → 200 + 更新后的资源
+@app.put("/products/{product_id}")
+def modify_product(product_id: str, info: ProductInfo):
+    if product_id not in db:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Product not found")
+    db[product_id] = {"id": product_id, **info.model_dump()}
+    return db[product_id]
+
+# 删除：DELETE 元素 → 204，无响应体
+@app.delete("/products/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_product(product_id: str):
+    if product_id not in db:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Product not found")
+    del db[product_id]
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono + Zod">
+<pre>
+import { Hono } from "hono";
+import { z } from "zod";
+import { zValidator } from "@hono/zod-validator";
+
+const app = new Hono();
+const db = new Map&lt;string, Product&gt;();         // 假装这是数据库
+
+const ProductInfo = z.object({                // 资源表示 → 请求体
+  name: z.string(),
+  type: z.string(),
+  price: z.number(),
+});
+type Product = z.infer&lt;typeof ProductInfo&gt; &amp; { id: string };
+
+const notFound = { message: "Product not found" };
+
+// 创建：POST 集合 → 201 + Location 头 + 响应体
+app.post("/products", zValidator("json", ProductInfo), (c) =&gt; {
+  const id = crypto.randomUUID().slice(0, 8); // ID 由系统生成，所以用 POST 而不是 PUT
+  const product = { id, ...c.req.valid("json") };
+  db.set(id, product);
+  c.header("Location", `/products/${id}`);
+  return c.json(product, 201);
+  // 商品信息有误时，zValidator 会自动返回 400
+});
+
+// 搜索：GET 集合，筛选条件 → 查询参数；没找到也是 200 + 空数组
+app.get("/products", (c) =&gt; {
+  const type = c.req.query("type");
+  return c.json([...db.values()].filter((p) =&gt; !type || p.type === type));
+});
+
+// 读取：GET 元素，资源标识符 → 路径参数
+app.get("/products/:productId", (c) =&gt; {
+  const product = db.get(c.req.param("productId"));
+  return product ? c.json(product) : c.json(notFound, 404);
+});
+
+// 更新：PUT 元素 → 200 + 更新后的资源
+app.put("/products/:productId", zValidator("json", ProductInfo), (c) =&gt; {
+  const id = c.req.param("productId");
+  if (!db.has(id)) return c.json(notFound, 404);
+  const product = { id, ...c.req.valid("json") };
+  db.set(id, product);
+  return c.json(product);
+});
+
+// 删除：DELETE 元素 → 204，无响应体
+app.delete("/products/:productId", (c) =&gt; {
+  if (!db.delete(c.req.param("productId"))) return c.json(notFound, 404);
+  return c.body(null, 204);
+});
+
+export default app;
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+@RestController
+@RequestMapping("/products")
+public class ProductController {
+
+    public record ProductInfo(@NotBlank String name, @NotBlank String type, @NotNull Double price) {}
+    public record Product(String id, String name, String type, Double price) {}
+
+    private final Map&lt;String, Product&gt; db = new ConcurrentHashMap&lt;&gt;();   // 假装这是数据库
+
+    // 创建：POST 集合 → 201 + Location 头 + 响应体
+    @PostMapping
+    public ResponseEntity&lt;Product&gt; addProduct(@Valid @RequestBody ProductInfo info) {
+        String id = UUID.randomUUID().toString().substring(0, 8);  // ID 由系统生成，所以用 POST
+        Product product = new Product(id, info.name(), info.type(), info.price());
+        db.put(id, product);
+        return ResponseEntity.created(URI.create("/products/" + id)).body(product);
+        // 商品信息有误时，@Valid 会让 Spring 自动返回 400
+    }
+
+    // 搜索：GET 集合，筛选条件 → 查询参数；没找到也是 200 + 空列表
+    @GetMapping
+    public List&lt;Product&gt; searchProducts(@RequestParam(required = false) String type) {
+        return db.values().stream()
+            .filter(p -&gt; type == null || p.type().equals(type))
+            .toList();
+    }
+
+    // 读取：GET 元素，资源标识符 → 路径参数
+    @GetMapping("/{productId}")
+    public Product getProduct(@PathVariable String productId) {
+        return find(productId);
+    }
+
+    // 更新：PUT 元素 → 200 + 更新后的资源
+    @PutMapping("/{productId}")
+    public Product modifyProduct(@PathVariable String productId, @Valid @RequestBody ProductInfo info) {
+        find(productId);
+        Product product = new Product(productId, info.name(), info.type(), info.price());
+        db.put(productId, product);
+        return product;
+    }
+
+    // 删除：DELETE 元素 → 204，无响应体
+    @DeleteMapping("/{productId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void removeProduct(@PathVariable String productId) {
+        find(productId);
+        db.remove(productId);
+    }
+
+    private Product find(String id) {
+        Product product = db.get(id);
+        if (product == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found");
+        return product;
+    }
+}
+</pre>
+</div>
+</div>
+
+<h2 id="do">「做某事」类操作怎么表示</h2>
+
+<p>
+  不是所有操作都能归入增删改查。「结账」是个动词，它作用于哪个资源？该用哪个方法？有三种处理方式：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="表示结账操作的三种方式：动作资源、把动作名词化为业务概念、聚焦动作的结果">
+  <rect class="bx" x="20" y="96" width="130" height="56" rx="10"/>
+  <text class="ttl" x="85" y="120" text-anchor="middle">操作：结账</text>
+  <text class="sm" x="85" y="138" text-anchor="middle">Check out</text>
+
+  <path class="ln" d="M150 112 C190 100 190 56 228 52" marker-end="url(#ar)"/>
+  <path class="ln-a" d="M150 124 H228" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M150 136 C190 148 190 196 228 200" marker-end="url(#ar-a)"/>
+
+  <rect class="bx" x="230" y="20" width="510" height="62" rx="10"/>
+  <text class="ttl" x="246" y="44">① 动作资源</text>
+  <text class="mono" x="246" y="66">POST /check-out</text>
+  <text class="sm" x="726" y="44" text-anchor="end">资源就是这个动作本身</text>
+  <text class="sm" x="726" y="66" text-anchor="end">合法（POST = 按资源含义处理），留作备选</text>
+
+  <rect class="bx-a" x="230" y="94" width="510" height="62" rx="10"/>
+  <text class="ttl on-a" x="246" y="118">② 把动作变成业务概念（名词化）</text>
+  <text class="mono" x="246" y="140">POST /checkouts</text>
+  <text class="sm" x="726" y="118" text-anchor="end">「创建一次结账」</text>
+  <text class="sm" x="726" y="140" text-anchor="end">还能顺带得到 GET /checkouts/{id}、GET /checkouts</text>
+
+  <rect class="bx-a" x="230" y="168" width="510" height="62" rx="10"/>
+  <text class="ttl on-a" x="246" y="192">③ 聚焦动作的结果</text>
+  <text class="mono" x="246" y="214">POST /orders</text>
+  <text class="sm" x="726" y="192" text-anchor="end">「（根据购物车）创建一个订单」</text>
+  <text class="sm" x="726" y="214" text-anchor="end">当动作本身在业务上不重要、结果才重要时</text>
+</svg>
+<figcaption>图 4-6　后两种（橙色）通常更好，因为名词资源还能支持更多操作</figcaption>
+</figure>
+
+<ul>
+  <li>
+    <strong>① 动作资源。</strong><code>POST /check-out</code>（如果有多个购物车则是 <code>POST /carts/{cartId}/check-out</code>）。
+    它返回 <code>201 Created</code>、订单信息和订单的 <code>Location</code>。动作资源也适合不产生任何东西的临时计算，比如 <code>POST /sum</code> 返回 <code>200</code> 和结果。
+  </li>
+  <li>
+    <strong>② 名词化。</strong>如果「结账」在业务上本身就是个值得记录的概念，就把动词变名词。
+    想不出名词时，试试加后缀：<em>-ing、-ment、-tion</em>……「execute」→「executions」。这种方式特别适合耗时长的操作（第 14 章）。
+  </li>
+  <li>
+    <strong>③ 聚焦结果。</strong>如果真正重要的是结账产生的「订单」，直接 <code>POST /orders</code>。
+  </li>
+</ul>
+
+<div class="tabs" data-title="方式 ③：POST /orders（从购物车创建订单）">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+@app.post("/orders", status_code=201)
+def check_out(response: Response):
+    if not cart.items:
+        raise HTTPException(400, "Cart is empty")        # 第 2 章识别出的失败：购物车为空
+    order = orders.create_from(cart)                      # 业务逻辑在实现里，不暴露给消费者
+    cart.clear()
+    response.headers["Location"] = f"/orders/{order.id}"
+    return order
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+app.post("/orders", (c) =&gt; {
+  if (cart.items.length === 0) {
+    return c.json({ message: "Cart is empty" }, 400);    // 第 2 章识别出的失败：购物车为空
+  }
+  const order = orders.createFrom(cart);                 // 业务逻辑在实现里，不暴露给消费者
+  cart.clear();
+  c.header("Location", `/orders/${order.id}`);
+  return c.json(order, 201);
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+@PostMapping("/orders")
+public ResponseEntity&lt;Order&gt; checkOut() {
+    if (cart.items().isEmpty()) {                         // 第 2 章识别出的失败：购物车为空
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cart is empty");
+    }
+    Order order = orders.createFrom(cart);                // 业务逻辑在实现里，不暴露给消费者
+    cart.clear();
+    return ResponseEntity.created(URI.create("/orders/" + order.id())).body(order);
+}
+</pre>
+</div>
+</div>
+
+<h2 id="rest-style">REST 架构风格</h2>
+
+<p>
+  到目前为止我们把 REST API 简化成了「把能力映射到 HTTP」。其实 REST（<strong>Re</strong>presentational <strong>S</strong>tate <strong>T</strong>ransfer，表述性状态转移）
+  是 Roy Fielding 在 2000 年的博士论文里提出的一种<strong>架构风格</strong>（他当时正在参与 HTTP 1.1 的制定），
+  目标是构建高效、可伸缩、可靠、简单、可移植、可修改的分布式系统。它由六条约束定义：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="REST 架构风格的六条约束">
+  <g>
+    <rect class="bx-b" x="20" y="20" width="230" height="118" rx="12"/>
+    <text class="ttl on-b" x="135" y="46" text-anchor="middle">① 客户端 / 服务端分离</text>
+    <text class="sm" x="135" y="70" text-anchor="middle">双方各司其职、责任均衡</text>
+    <text class="sm" x="135" y="96" text-anchor="middle">→ 第 2 章：消费者视角 vs</text>
+    <text class="sm" x="135" y="114" text-anchor="middle">提供者视角</text>
+
+    <rect class="bx-g" x="265" y="20" width="230" height="118" rx="12"/>
+    <text class="ttl on-g" x="380" y="46" text-anchor="middle">② 无状态</text>
+    <text class="sm" x="380" y="70" text-anchor="middle">每个请求自带所需的全部信息</text>
+    <text class="sm" x="380" y="88" text-anchor="middle">服务端不保存会话上下文</text>
+    <text class="sm" x="380" y="114" text-anchor="middle">→ 第 2 章：与场景无关的操作</text>
+
+    <rect class="bx-p" x="510" y="20" width="230" height="118" rx="12"/>
+    <text class="ttl on-p" x="625" y="46" text-anchor="middle">③ 可缓存</text>
+    <text class="sm" x="625" y="70" text-anchor="middle">响应要说明自己能否被复用</text>
+    <text class="sm" x="625" y="88" text-anchor="middle">以及能复用多久</text>
+    <text class="sm" x="625" y="114" text-anchor="middle">→ 第 13 章</text>
+
+    <rect class="bx" x="20" y="152" width="230" height="118" rx="12"/>
+    <text class="ttl" x="135" y="178" text-anchor="middle">④ 分层系统</text>
+    <text class="sm" x="135" y="202" text-anchor="middle">客户端只看得见、只接触服务端</text>
+    <text class="sm" x="135" y="220" text-anchor="middle">对其背后的基础设施一无所知</text>
+    <text class="sm" x="135" y="246" text-anchor="middle">→ 第 1 章：接口隐藏实现</text>
+
+    <rect class="bx-a" x="265" y="152" width="230" height="118" rx="12"/>
+    <text class="ttl on-a" x="380" y="178" text-anchor="middle">⑤ 统一接口</text>
+    <text class="sm" x="380" y="202" text-anchor="middle">用标准方法操纵资源的「表示」</text>
+    <text class="sm" x="380" y="220" text-anchor="middle">并借助元数据解释它</text>
+    <text class="sm" x="380" y="246" text-anchor="middle">→ 本章做的就是这件事</text>
+
+    <rect class="bx-d" x="510" y="152" width="230" height="118" rx="12"/>
+    <text class="ttl" x="625" y="178" text-anchor="middle">⑥ 按需代码（可选）</text>
+    <text class="sm" x="625" y="202" text-anchor="middle">服务端可以把可执行代码</text>
+    <text class="sm" x="625" y="220" text-anchor="middle">（如 JavaScript）传给客户端</text>
+    <text class="sm" x="625" y="246" text-anchor="middle">REST API 里很少用到</text>
+  </g>
+</svg>
+<figcaption>图 4-7　REST 的六条约束。这些原则同样可以用于其他类型的远程 API</figcaption>
+</figure>
+
+<div class="box deep">
+  <div class="t">&#128172; 关于「这算不算 RESTful」的争论</div>
+  <p>
+    这类争论往往激烈而没有结果，而且常常源于对 REST 和 HTTP 的误解：
+  </p>
+  <ul>
+    <li>「<code>POST /do</code> 不 RESTful，因为 <code>/do</code> 是动作不是资源。」—— HTTP 规范（RFC 9110）明确说它<em>不限制资源的性质</em>，动作资源是合法的。</li>
+    <li>「REST API 里集合必须用复数。」—— 命名约定并不决定一个 API 是否 RESTful。</li>
+  </ul>
+  <p>
+    与其争论标签，不如理解原则、知道何时做取舍、评估只遵守部分原则的后果。
+    面对那些自称 RESTful 却连 HTTP 都没用对的老 API，重点不是指责过去，而是别再继续加深问题。
+  </p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>资源路径要唯一（必要时用路径参数）、表意清楚、体现父子关系（<code>/parent/child</code>）。</li>
+  <li>集合用 <code>/elements</code>，元素用 <code>/elements/{id}</code>。</li>
+  <li>五种典型操作：搜索 <code>GET /elements</code>；创建 <code>POST /elements</code>（或 <code>PUT /elements/{id}</code>）；读取 <code>GET /elements/{id}</code>；更新 <code>PUT</code>/<code>PATCH /elements/{id}</code>；删除 <code>DELETE /elements/{id}</code>。</li>
+  <li>资源表示 → 请求体；资源标识符 → 路径参数；资源修饰符 → 查询参数（除非有对应的标准头）。</li>
+  <li>成功 <code>2XX</code>，消费者的错 <code>4XX</code>，提供者的错 <code>5XX</code>。</li>
+  <li>创建成功 <code>201</code>；有数据返回的成功 <code>200</code>；无数据返回的成功 <code>204</code>。</li>
+  <li>有输入就要有 <code>400</code>；有路径参数就要有 <code>404</code>；所有操作都要有 <code>500</code>。</li>
+  <li>输出数据放响应体，除非它对应一个标准头（如 <code>Location</code>）。</li>
+  <li>非 CRUD 操作可以映射为 <code>POST /do</code>、<code>POST /doings</code>（名词化）或 <code>POST /results</code>（结果资源），优先后两者。</li>
+  <li>REST 架构风格的约束：客户端/服务端分离、无状态、可缓存、分层系统、统一接口，以及可选的按需代码。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      修正下面这些图书馆 API 的调用：<br>
+      a) 读取某本书的一条书评：<code>GET /books/12345/reviews?reviewId=678</code><br>
+      b) 列出某借阅者借的书：<code>GET /books/borrowers/7890</code><br>
+      c) 搜索可借的英文书：<code>GET /books/available/en</code><br>
+      d) 获取图书信息：<code>GET /book/12345</code><br>
+      e) 搜索科幻作者：<code>GET /genres/science-fiction/author</code>
+      <details class="ans"><summary>参考答案</summary>
+        a) 书评 ID 是标识符 → <code>GET /books/12345/reviews/678</code>。<br>
+        b) 层级反了 → <code>GET /borrowers/7890/books</code>（或 <code>GET /books?borrowerId=7890</code>）。<br>
+        c) 「可借」「英文」是筛选条件 → <code>GET /books?available=true&amp;language=en</code>。<br>
+        d) 路径本身合法，但要与其他路径保持一致用复数 → <code>GET /books/12345</code>。<br>
+        e) 体裁是筛选条件，且集合名应统一 → <code>GET /authors?genre=science-fiction</code>。
+      </details>
+    </li>
+    <li>
+      活动订票 API。为每个操作写出 HTTP 方法和每个输入的位置：搜索活动（类型、日期范围）；订票（活动、座位数、参加者信息）；修改预订（预订、新座位数、参加者信息）；取消预订（预订）；获取某用户的预订（用户、活动类型、日期范围）。
+      <details class="ans"><summary>参考答案</summary>
+        <code>GET /events?type=…&amp;from=…&amp;to=…</code>（全是查询参数）；<br>
+        <code>POST /bookings</code>（活动引用、座位数、参加者信息都在请求体）；<br>
+        <code>PUT</code> 或 <code>PATCH /bookings/{bookingId}</code>（预订在路径，其余在请求体）；<br>
+        <code>DELETE /bookings/{bookingId}</code>（路径）；<br>
+        <code>GET /users/{userId}/bookings?eventType=…&amp;from=…&amp;to=…</code>（用户在路径，其余在查询参数）。
+      </details>
+    </li>
+    <li>
+      餐厅预订系统，修正这些状态码：<code>404</code> 搜索空桌但没有匹配的；<code>200</code> 成功创建了预订；<code>500</code> 客户端用无效的预订 ID 更新预订；<code>204</code> 成功取消预订；<code>455</code> 提交了不可能的日期或负数人数。
+      <details class="ans"><summary>参考答案</summary>
+        搜索无结果 → <code>200</code> + 空列表；创建成功 → <code>201</code>；无效 ID 是客户端的错 → <code>404</code>；取消成功 <code>204</code> 没问题（若返回数据则 <code>200</code>）；
+        <code>455</code> 是未分配的代码，不能自创 → <code>400</code>。
+      </details>
+    </li>
+    <li>
+      杂志订阅 API 创建订阅时返回 <code>200 OK</code> 和订阅数据。怎么改？
+      <details class="ans"><summary>参考答案</summary>
+        状态码改为 <code>201 Created</code>，并加上 <code>Location: /subscriptions/{subscriptionId}</code> 响应头。
+      </details>
+    </li>
+    <li>把本章的 CRUD 实现挑一种语言跑起来，用 <code>curl -i</code> 依次调用五个操作，核对每个响应的状态码和响应头是否与操作表一致。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

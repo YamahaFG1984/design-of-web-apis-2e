@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 16 章 · 让设计决策更轻松 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="16">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 16 章</span>
+<h1>让设计决策更轻松</h1>
+<p class="lede">
+  用 IBAN 还是账号？叫 owner 还是 user？<code>/accounts</code> 还是 <code>/account</code>？<code>403</code> 还是 <code>404</code>？布尔值还是字符串？分页怎么做？
+  设计 API 就是做无数个决定，每一个都可能带来严重后果或不一致。
+  这一章进入最后一层：<strong>让设计过程本身有章法、可持续</strong>。两样工具 —— 一套做决定的方法，和一份 API 设计指南。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>掌握自信而一致地做设计决定的六个习惯</li>
+    <li>知道去哪里、怎样为设计问题寻找答案，以及如何审视找到的答案</li>
+    <li>会用架构决策记录（ADR）把决定和理由记下来</li>
+    <li>理解 API 设计指南是什么、里面该放什么</li>
+    <li>知道如何从小处起步，迭代地建立和演进设计指南</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="decide">自信而一致地做决定</h2>
+
+<p>
+  即使掌握了前面十五章的全部内容，你仍然会遇到没有现成答案的问题，或者对某个决定心里没底；时间长了，还可能不知不觉地前后不一。六个习惯可以帮你：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="做设计决定的六个习惯">
+  <g>
+    <rect class="bx" x="20" y="20" width="230" height="96" rx="12"/>
+    <text class="ttl" x="36" y="44">① 现在是做这个决定的时候吗</text>
+    <text class="sm" x="36" y="66">第一遍建模时不必争论</text>
+    <text class="sm" x="36" y="84">用布尔值还是枚举。先记下来，</text>
+    <text class="sm" x="36" y="102">等信息更多时决定更容易。</text>
+
+    <rect class="bx" x="265" y="20" width="230" height="96" rx="12"/>
+    <text class="ttl" x="281" y="44">② 这个决定影响多大</text>
+    <text class="sm" x="281" y="66">分页方式、错误格式：影响所有</text>
+    <text class="sm" x="281" y="84">API，要慎重。储蓄和活期账户</text>
+    <text class="sm" x="281" y="102">是否分开：只影响这一个 API。</text>
+
+    <rect class="bx-g" x="510" y="20" width="230" height="96" rx="12"/>
+    <text class="ttl on-g" x="526" y="44">③ 参考可信的既往决定</text>
+    <text class="sm" x="526" y="66">最省事的决定是已经做过的。</text>
+    <text class="sm" x="526" y="84">现有 API 可以参考，但设计指南</text>
+    <text class="sm" x="526" y="102">才是更可靠的来源。</text>
+
+    <rect class="bx-g" x="20" y="132" width="230" height="96" rx="12"/>
+    <text class="ttl on-g" x="36" y="156">④ 参考可信的外部来源</text>
+    <text class="sm" x="36" y="178">分页、搜索、文件上传……</text>
+    <text class="sm" x="36" y="196">外面早有成熟做法和标准。</text>
+    <text class="sm" x="36" y="214">但要仔细比较，别照单全收。</text>
+
+    <rect class="bx-a" x="265" y="132" width="230" height="96" rx="12"/>
+    <text class="ttl on-a" x="281" y="156">⑤ 用推理和有出处的信息支撑</text>
+    <text class="sm" x="281" y="178">说出「为什么」，并用可信的</text>
+    <text class="sm" x="281" y="196">信息佐证 —— 自己的推理</text>
+    <text class="sm" x="281" y="214">可能带着偏见。</text>
+
+    <rect class="bx-a" x="510" y="132" width="230" height="96" rx="12"/>
+    <text class="ttl on-a" x="526" y="156">⑥ 大声说出来</text>
+    <text class="sm" x="526" y="178">一个人卡住时，把问题和推理</text>
+    <text class="sm" x="526" y="196">讲给一只橡皮鸭听。和别人</text>
+    <text class="sm" x="526" y="214">讨论时，讲出理由能减少争吵。</text>
+  </g>
+</svg>
+<figcaption>图 16-1　不是每个问题都要立刻回答，也不是每个决定都同样重要</figcaption>
+</figure>
+
+<ul>
+  <li>
+    <strong>① 时机。</strong>推迟决定不是拖延，而是把注意力放在当前该解决的问题上，同时积累更多信息。
+    第一遍建模时，直接在模型里写上 <code>executedOrStatus</code>，并在描述里留个备注就行。
+  </li>
+  <li>
+    <strong>③ 既往决定。</strong>保持一致本身就免除了很多决策的负担：部分更新、分页、文件上传、用哪个标识符……可能早有定论。
+    但从现有 API 里找「可信」的答案并不容易：不同团队可能各有一套做法；最流行的做法可能已经过时；你可能漏看了某些 API。
+    这正是大小团队都要建立设计指南的原因 —— 通常是在造出了一堆彼此不同的 API、受够了重复发明（错误的）轮子之后。
+  </li>
+  <li>
+    <strong>⑤ 理由。</strong>例如「资源自己的标识符统一叫 <code>id</code>」（第 8 章）：理由是它一眼可辨、在所有资源和所有 API 里都一样；
+    佐证是很多知名 API 都这么做，也可以向消费方的开发者求证。不过并非每个决定都需要长篇论证 —— 银行 API 里叫「account」不需要解释。
+  </li>
+</ul>
+
+<h2 id="research">为设计问题寻找答案</h2>
+
+<h3>去哪找</h3>
+
+<div class="tw">
+<table>
+  <tr><th>来源</th><th>说明</th></tr>
+  <tr><td><strong>自己的 API 设计指南</strong></td><td>首选。路径怎么组织、分页怎么做，多半已经写在里面</td></tr>
+  <tr><td>组织内现有的 API</td><td>可以看，但其中通用的模式本应已经进了指南</td></tr>
+  <tr><td>惯用的开发框架</td><td>Spring Boot、Django、Express 等自带分页之类的通用功能，可以直接采用它们的默认参数 —— 但在多技术栈的环境里要当心引入不一致</td></tr>
+  <tr><td>API 或数据标准</td><td>通用的：HTTP 规范、Problem Details、CloudEvents。行业的：银行业 ISO 20022、电信业 TM Forum Open APIs</td></tr>
+  <tr><td>别人的设计指南</td><td>很多组织公开了自己的指南（如 Microsoft 的）。搜「API guidelines」「API style guide」</td></tr>
+  <tr><td>其他组织的 API</td><td>想为地址建模？看看电商 API 是怎么做的</td></tr>
+  <tr><td>书、文章、视频</td><td>提供对比、利弊分析和背景</td></tr>
+  <tr><td>RFC</td><td><a href="https://www.rfc-editor.org">rfc-editor.org</a>，尤其是「Best Current Practice」类别</td></tr>
+</table>
+</div>
+
+<h3>怎么审视找到的答案</h3>
+
+<div class="box warn">
+  <div class="t">&#9888; 用 AI 搜索时，核对出处</div>
+  <p>
+    让 AI 替你搜索和总结很方便，比如问「REST API 里怎么表示大于等于的搜索条件？」。但 AI 会出错，
+    建议用<strong>会列出来源</strong>的 AI 搜索，这样你能核实信息是否真实存在、质量如何、是否适用于你的场景。
+  </p>
+</div>
+
+<ul>
+  <li>
+    <strong>它常见吗？</strong>AI 可能给出「用 JSON 编码的筛选条件」（<code>?filter={"amount":{"$gte":100}}</code>）。
+    追问一句「这种写法常见吗？」就会发现并不常见 —— 那就别用。
+  </li>
+  <li>
+    <strong>它适合我们的场景吗？</strong>从满足需求、效率、安全和一致性几个角度客观地检查。
+  </li>
+  <li>
+    <strong>「某大厂这么做」不是理由。</strong>不认同其他组织的 API 设计完全没问题。相似的问题在不同的背景下会有不同的（好的和坏的）解法。
+    重要的是弄明白<strong>为什么</strong> —— 无论是为什么你不认同，还是为什么对方选了你喜欢的那个方案。
+  </li>
+</ul>
+
+<h3>把决定记下来：ADR</h3>
+
+<p>
+  重要的决定要记录下来：为了以后记得、能理解、能向别人解释，也为了逼自己<strong>把理由说清楚</strong>。
+  推荐使用<strong>架构决策记录（Architectural Decision Record, ADR）</strong>的形式 —— 它本是软件架构领域的做法，但可以用于任何决定。一份 ADR 就是一个 Markdown 文件或一页 wiki；多份 ADR 构成决策日志。
+</p>
+
+<p>作者喜欢 <a href="https://adr.github.io/madr/">MADR</a>（Markdown Any Decision Records）模板的长版本。一个例子：</p>
+
+<div class="code" data-lang="text" data-file="adr/0007-resource-id-property-name.md">
+<pre>
+# 资源标识符属性的命名
+
+## 背景与问题
+
+每个资源的数据模型都必须包含该资源的唯一标识符。存放它的属性应该叫什么？
+
+## 考虑过的方案
+
+* 通用的名字（`id`）
+* 包含资源名的名字（`accountId`、`ownerId`）
+
+## 决定及其后果
+
+选择「通用的名字（`id`）」，因为它可互操作、一眼可辨。
+一个小缺点是单独看到它时无法判断其内容。GitHub、Stripe 等很多 API 都采用这种做法。
+
+## 各方案的利弊
+
+### 通用的名字
+
+* 利：在一堆其他 ID 之中能立刻认出来（`id` 对比 `ownerId`）。
+* 利：可互操作；所有资源的 ID 都叫 `id`。
+* 弊：单独出现时无法辨认（`id` 可能是账户的，也可能是户主的）。
+  不过它总是出现在完整的资源数据里。
+
+### 包含资源名的名字
+
+* 利：一眼就知道这个 ID 属于哪种资源。
+* 弊：不可互操作；每种资源的 ID 名字都不同。
+* 弊：在数据里无法把「本资源的标识符」和「对其他资源的引用」区分开
+  （`accountId` 对比 `ownerId`）。
+
+## 更多信息
+
+- GitHub、Stripe 等用 `id`（Twilio 用 `sid`）
+- Salesforce 的部分 API 用 `resourceId`，部分用 `id`
+- 《The Design of Web APIs（第 2 版）》推荐 `id`
+</pre>
+</div>
+
+<p>
+  实际写的顺序是：先在「背景与问题」里把问题框定清楚 → 调研，列出方案并逐个分析利弊 → 随手把出处记进「更多信息」→ 最后才写「决定及其后果」。
+  API 设计相关的 ADR 大多涉及<strong>跨 API</strong> 的问题，它们是设计指南的地基。
+</p>
+
+<h2 id="guidelines">API 设计指南是什么</h2>
+
+<p>
+  ADR 是很好的决策日志，但不适合当日常的设计手册。设想你要设计一个「搜索交易」操作：路径、状态码、响应格式、分页、筛选、错误处理……要翻好几份 ADR，既麻烦又容易漏。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="ADR、原则与规则、可操作的配方之间的关系">
+  <rect class="bx-p" x="20" y="150" width="720" height="70" rx="12"/>
+  <text class="ttl on-p" x="36" y="174">ADR（决策记录）</text>
+  <text class="sm" x="36" y="194">为什么：每个决定的问题、备选方案、利弊、出处</text>
+  <text class="sm" x="724" y="194" text-anchor="end">地基</text>
+
+  <rect class="bx-b" x="60" y="86" width="640" height="54" rx="12"/>
+  <text class="ttl on-b" x="76" y="110">原则与规则</text>
+  <text class="sm" x="76" y="128">是什么：「错误必须使用 Problem Details」「账户必须用 IBAN 标识」「集合路径用复数」</text>
+
+  <rect class="bx-a" x="110" y="20" width="540" height="56" rx="12"/>
+  <text class="ttl on-a" x="126" y="44">可操作的配方（recipe）</text>
+  <text class="sm" x="126" y="62">怎么做：「如何设计搜索/列表操作」—— 把相关的规则汇集在一处，附完整示例</text>
+
+  <path class="ln-d" d="M380 150 V142" marker-end="url(#ar)"/>
+  <path class="ln-d" d="M380 86 V78" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 16-2　设计指南建立在 ADR 之上，但面向的是「我现在要设计这个，该怎么做」</figcaption>
+</figure>
+
+<p>
+  有了设计指南，你打开「如何设计搜索或列表操作」这份配方，所有要点都在一处（不展开每一条的来龙去脉，但有指向 ADR 的链接），还有完整的示例。
+  再配上能自动检查 OpenAPI 文档的工具（<strong>linter</strong>，第 18 章），遗漏的风险就更小了。
+</p>
+
+<div class="box key">
+  <div class="t">&#9733; 指南的真正价值</div>
+  <p>
+    设计指南让你把精力放在<strong>满足用户需求、交付价值</strong>上，而不是第一百次争论「搜索没结果时该返回 <code>200</code> 加空列表还是 <code>404</code>」。
+    这个问题已经有答案了；你可以专心去想 <code>TransactionSummary</code> 里到底该有哪些数据。
+  </p>
+</div>
+
+<h3>设计指南与 API 治理</h3>
+
+<p>设计指南常与 <strong>API 治理（governance）</strong>联系在一起。治理有两种截然不同的做法：</p>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">&#128110; 「API 警察」</div>
+    <p style="padding:10px 14px;margin:0;font-size:14.5px">
+      对着不遵守（复杂而不实用的）设计规则的人大喊大叫。只关心整个 API 版图的一致性，不关心如何帮助做 API 的人，也常常忽视好用性。
+    </p>
+  </div>
+  <div class="new">
+    <div class="h">&#129309; 「赋能者」</div>
+    <p style="padding:10px 14px;margin:0;font-size:14.5px">
+      提供资源和支持，让组织能大规模地创建 API：指南、工具、培训、布道、答疑。覆盖设计的所有层次和整个 API 生命周期。
+    </p>
+  </div>
+</div>
+
+<h3>什么时候需要设计指南</h3>
+<p>
+  <strong>总是需要</strong> —— 即使没有成体系的治理，即使只有你一个人。你会创建和演进很多 API，而你并不总记得去年夏天是怎么做的。
+  在团队里更是必需：每个人学到的设计方式不尽相同；人员来来去去，现成的指南能让新人更快上手。详略程度按你的实际情况调整。
+</p>
+
+<h2 id="content">好用的设计指南里有什么</h2>
+
+<h3>原则与规则</h3>
+<p>
+  最基础的内容：一组通用的或领域特定的规则。允许哪些 HTTP 方法（<code>PUT</code>、<code>PATCH</code> 或两者）、用哪些状态码（<code>400</code> 还是 <code>422</code>）、路径的命名约定（单数还是复数）、默认的分页方式及其参数和元数据。
+  也包括领域规则：「账户必须始终用 IBAN 标识」。理想情况下每条规则都链接到解释它的 ADR。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 用 RFC 2119 的措辞表达强制程度</div>
+  <p><strong>MUST</strong>（必须）、<strong>SHOULD</strong>（应该 —— 特定情况下才可以不遵守）、<strong>MAY</strong>（可以）。这是技术规范里通行的约定。</p>
+</div>
+
+<h3>可操作的配方</h3>
+<p>
+  只有一长串细碎规则的指南很常见，也是「根本没法遵守」的最短路径：面对一个具体任务，谁知道该同时用哪几条？
+  把规则<strong>组织成配方</strong>（同一条规则可以出现在多份配方里），每份配方指导你完成一项具体的设计任务。以「如何设计搜索或列表操作」为例，它应该包含：
+</p>
+<ul>
+  <li>操作的<strong>目的</strong>（列出或搜索集合中的元素）；</li>
+  <li>附加<strong>功能</strong>（筛选、分页、排序）及其参数的名字和位置；</li>
+  <li><strong>行为</strong>（成功、各种错误、没有结果时怎么办）；</li>
+  <li>路径怎么写、所有可能的<strong>响应</strong>（场景、状态码、体、头）；</li>
+  <li><strong>适用范围和例外</strong>：比如一个提示框写着「筛选条件敏感时，请看《如何用敏感条件搜索》」。</li>
+</ul>
+<p>
+  配方也可以针对流程（「如何在操作流中加入文件上传」「如何在多步流程中收集数据」），或者概述某个方面（「如何处理错误」）。
+</p>
+
+<h3>拿来即用的产物和工具</h3>
+<ul>
+  <li><strong>示例和 OpenAPI 模板</strong>：用片段或完整的模板来说明配方；</li>
+  <li><strong>共享的 OpenAPI 组件库</strong>：可以被很多文档引用的标准组件，比如统一的 <code>Error</code> 模型、<code>UnexpectedError</code> 响应（第 17 章）；</li>
+  <li><strong>Linter</strong>：自动检查 OpenAPI 文档是否符合指南（第 18 章）。</li>
+</ul>
+
+<h3>规则是可以被检查的</h3>
+
+<p>
+  一条写得好的规则应该足够明确，明确到能让程序来检查。下面用三种语言各写一个十几行的小脚本，检查 OpenAPI 文档是否符合三条指南规则。
+  这就是下一章要用的 linter 的雏形 —— 真正做的时候不必手写，但自己写一次能让你明白它并不神秘：
+</p>
+
+<div class="tabs" data-title="用脚本检查三条指南规则">
+<div class="code" data-lang="python">
+<pre>
+import re, sys, yaml
+
+METHODS = {"get", "post", "put", "patch", "delete"}
+KEBAB = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
+
+doc = yaml.safe_load(open(sys.argv[1]))
+problems = []
+
+for path, item in doc["paths"].items():
+    # 规则 1（MUST）：路径中的固定段使用小写 kebab-case
+    for segment in filter(None, path.split("/")):
+        if not segment.startswith("{") and not KEBAB.match(segment):
+            problems.append(f"{path}: 路径段 '{segment}' 不是 kebab-case")
+
+    for method, op in item.items():
+        if method not in METHODS:
+            continue
+        where = f"{method.upper()} {path}"
+        # 规则 2（MUST）：每个操作都有 summary
+        if not op.get("summary"):
+            problems.append(f"{where}: 缺少 summary")
+        # 规则 3（MUST）：每个操作都处理意外的服务端错误
+        if "500" not in op.get("responses", {}):
+            problems.append(f"{where}: 缺少 500 响应")
+
+print("\n".join(problems) or "符合指南 ✓")
+sys.exit(1 if problems else 0)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+import { readFileSync } from "node:fs";
+import { parse } from "yaml";
+
+const METHODS = ["get", "post", "put", "patch", "delete"];
+const KEBAB = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+
+const doc = parse(readFileSync(process.argv[2], "utf8"));
+const problems: string[] = [];
+
+for (const [path, item] of Object.entries&lt;Record&lt;string, any&gt;&gt;(doc.paths)) {
+  // 规则 1（MUST）：路径中的固定段使用小写 kebab-case
+  for (const segment of path.split("/").filter(Boolean)) {
+    if (!segment.startsWith("{") &amp;&amp; !KEBAB.test(segment)) {
+      problems.push(`${path}: 路径段 '${segment}' 不是 kebab-case`);
+    }
+  }
+
+  for (const [method, op] of Object.entries(item)) {
+    if (!METHODS.includes(method)) continue;
+    const where = `${method.toUpperCase()} ${path}`;
+    // 规则 2（MUST）：每个操作都有 summary
+    if (!op.summary) problems.push(`${where}: 缺少 summary`);
+    // 规则 3（MUST）：每个操作都处理意外的服务端错误
+    if (!op.responses?.["500"]) problems.push(`${where}: 缺少 500 响应`);
+  }
+}
+
+console.log(problems.join("\n") || "符合指南 ✓");
+process.exit(problems.length ? 1 : 0);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.parser.OpenAPIV3Parser;
+import java.util.*;
+import java.util.regex.Pattern;
+
+public class GuidelineCheck {
+    static final Pattern KEBAB = Pattern.compile("^[a-z][a-z0-9]*(-[a-z0-9]+)*$");
+
+    public static void main(String[] args) {
+        OpenAPI doc = new OpenAPIV3Parser().read(args[0]);
+        List&lt;String&gt; problems = new ArrayList&lt;&gt;();
+
+        doc.getPaths().forEach((path, item) -&gt; {
+            // 规则 1（MUST）：路径中的固定段使用小写 kebab-case
+            for (String segment : path.split("/")) {
+                if (!segment.isEmpty() &amp;&amp; !segment.startsWith("{") &amp;&amp; !KEBAB.matcher(segment).matches()) {
+                    problems.add(path + ": 路径段 '" + segment + "' 不是 kebab-case");
+                }
+            }
+            item.readOperationsMap().forEach((method, op) -&gt; {
+                String where = method + " " + path;
+                // 规则 2（MUST）：每个操作都有 summary
+                if (op.getSummary() == null || op.getSummary().isBlank()) {
+                    problems.add(where + ": 缺少 summary");
+                }
+                // 规则 3（MUST）：每个操作都处理意外的服务端错误
+                if (op.getResponses() == null || !op.getResponses().containsKey("500")) {
+                    problems.add(where + ": 缺少 500 响应");
+                }
+            });
+        });
+
+        System.out.println(problems.isEmpty() ? "符合指南 ✓" : String.join("\n", problems));
+        System.exit(problems.isEmpty() ? 0 : 1);
+    }
+}
+</pre>
+</div>
+</div>
+
+<h3>关于设计过程本身</h3>
+<p>
+  指南还可以包含：能力画布的模板、设计流程的说明（输入输出产物的检查清单、谁在什么时候负责什么）、可信信息来源的清单、ADR 模板及其使用说明。
+</p>
+
+<h3>实现与架构方面的考虑</h3>
+<p>
+  在有帮助的地方可以补充实现或架构的细节 —— 比如游标分页对实现意味着什么，这有助于做决定。
+  但别塞进太多与设计无关的内容；可以另有一份独立的实现指南，两者互相引用。
+</p>
+
+<h2 id="build">怎样建立设计指南</h2>
+
+<h3>从小处开始</h3>
+
+<p>不要试图在设计第一个 API 之前写出包罗万象的指南。从覆盖<strong>五种典型操作</strong>的最小配方开始，这已经能满足大部分需要：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="基础设计指南的目录：五份配方和支撑它们的四类原则与规则">
+  <rect class="bx" x="20" y="20" width="720" height="200" rx="14"/>
+  <text class="ttl" x="40" y="46">基础 API 设计指南 · 目录</text>
+
+  <text class="lbl on-a" x="40" y="76">配方</text>
+  <rect class="bx-a" x="40" y="86" width="126" height="36" rx="8"/><text class="sm" x="103" y="108" text-anchor="middle">如何创建一个元素</text>
+  <rect class="bx-a" x="176" y="86" width="126" height="36" rx="8"/><text class="sm" x="239" y="108" text-anchor="middle">如何搜索/列出元素</text>
+  <rect class="bx-a" x="312" y="86" width="126" height="36" rx="8"/><text class="sm" x="375" y="108" text-anchor="middle">如何读取一个元素</text>
+  <rect class="bx-a" x="448" y="86" width="126" height="36" rx="8"/><text class="sm" x="511" y="108" text-anchor="middle">如何更新一个元素</text>
+  <rect class="bx-a" x="584" y="86" width="136" height="36" rx="8"/><text class="sm" x="652" y="108" text-anchor="middle">如何删除一个元素</text>
+
+  <text class="lbl on-b" x="40" y="150">它们所依赖的原则与规则</text>
+  <rect class="bx-b" x="40" y="160" width="160" height="46" rx="8"/><text class="ttl on-b" x="120" y="180" text-anchor="middle">HTTP</text><text class="sm" x="120" y="197" text-anchor="middle">方法、状态码、头、位置</text>
+  <rect class="bx-b" x="213" y="160" width="160" height="46" rx="8"/><text class="ttl on-b" x="293" y="180" text-anchor="middle">数据</text><text class="sm" x="293" y="197" text-anchor="middle">信封、命名、典型模型、路径</text>
+  <rect class="bx-b" x="386" y="160" width="160" height="46" rx="8"/><text class="ttl on-b" x="466" y="180" text-anchor="middle">错误</text><text class="sm" x="466" y="197" text-anchor="middle">格式、报全所有错误</text>
+  <rect class="bx-b" x="559" y="160" width="161" height="46" rx="8"/><text class="ttl on-b" x="639" y="180" text-anchor="middle">功能</text><text class="sm" x="639" y="197" text-anchor="middle">分页、排序、基本筛选</text>
+</svg>
+<figcaption>图 16-3　起步版的指南。复杂筛选、批量操作、文件上传这些不常见的话题先放一放</figcaption>
+</figure>
+
+<p>写这五份配方时，你需要回答的问题大致是：</p>
+<ul>
+  <li><strong>HTTP</strong>：允许 <code>PATCH</code> 还是只用 <code>PUT</code>？用哪些状态码、各在什么情况下用？允许自定义请求头吗？</li>
+  <li><strong>数据</strong>：单个元素和列表是否用 <code>data</code> 属性包起来？大小写约定？资源 ID 在体里叫什么？典型模型（完整、摘要……）各用在哪？路径怎么组织，集合用单数还是复数？</li>
+  <li><strong>错误</strong>：用什么错误格式（Problem Details？）？操作失败时的行为（比如必须报全所有错误）？</li>
+  <li><strong>功能</strong>：分页、排序、基本筛选怎么设计？哪些是必须提供的？</li>
+</ul>
+
+<div class="box tip">
+  <div class="t">&#128161; 先做示例设计，再从中提炼</div>
+  <p>先动手做几个示例设计，再从中归纳出原则和规则，会顺手很多。但不要跳过原则和规则（以及支撑它们的 ADR）直接从示例写配方 —— 它们是现在和将来所有指南的地基，也是你设计选择的依据。</p>
+</div>
+
+<h3>考虑现有的 API</h3>
+<p>
+  理想情况是为第一个 API 就建立指南，但现实中指南几乎总是在已经有了几个或很多 API 之后才出现（这也有好处：你已经知道自己喜欢什么、什么行得通）。
+  可以从现有 API 出发，除非它们与本教程的原则冲突太多，或者与外界的通行做法差别太大。
+</p>
+<p>
+  如果新指南与现有 API 不一致，<strong>不能</strong>不评估影响就把它们全改了（第 15 章）。常见的策略是：
+  <strong>新 API 遵循新指南；老 API 在新增内容时参照新指南；只有当老 API 因为期待已久的新功能而需要大改时，才整体重新设计。</strong>
+  API 版图要变得一致需要时间，也可能永远不会完全一致。但这个策略能止住设计债务的增长，又不破坏现有的消费者。
+</p>
+
+<h3>遇到新问题时再扩充</h3>
+<p>
+  从小处开始意味着覆盖不了所有问题 —— 这反而是个好策略：你只为<strong>真实遇到的问题</strong>定义解法，而且能在实战中检验它。
+  文件上传就是典型：它远不止是设计一个 HTTP 请求，还牵涉基础设施和安全。如果你们还没在自己的架构里处理过它，最好等看清全貌再定设计。
+</p>
+
+<h3>每条规则都要有价值</h3>
+<p>
+  最容易掉进去的坑是<strong>为了定规则而定规则</strong>（「API 警察」的典型症状）。所以要为每条规则写 ADR，说明它的好处和代价。
+  <strong>说不出理由的规则不应该存在。</strong>比如「资源 ID 必须是数字」—— 按上面的方法认真分析一下各种选项的利弊，你就会发现这不是个好主意。
+</p>
+
+<h3>谨慎地修改指南</h3>
+<p>
+  指南定义了我们如何设计 API，修改它要格外小心：如果一次修改让所有现有 API 都变成「不合规」，那就有问题了。
+  不要仅仅为了让设计「更好」就大改分页方式，或者把通用的 <code>400</code> 换成 <code>422</code>。
+  用第 15 章的方法来演进指南：可以给指南编版本号来追踪变化，但尽量不引入破坏性的修改。
+</p>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>确认现在是做这个决定的时候，把注意力放在当前该解决的问题上；等视野更开阔时，决定会更容易。</li>
+  <li>评估决定的影响范围，以减轻决策压力，只花必要的时间。</li>
+  <li>合乎逻辑地解释你为什么、如何得出某个结论。</li>
+  <li>复用可信的既往决定：设计指南、同一个 API 的其他操作、其他内部 API。</li>
+  <li>看看外界是如何回答你的问题的，以求更大范围的一致。</li>
+  <li>把推理大声说出来，既帮助自己思考，也帮助别人理解。</li>
+  <li>寻找答案的来源：自己的指南和 API、惯用的开发框架、API 与数据标准、别人的设计指南和 API。</li>
+  <li>用 AI 寻找答案时核对其来源；客观地审视找到的方案，并确认它们是通行的做法。</li>
+  <li>用 ADR 记录并论证决定：要解决的问题、决定、考虑过的方案、推理、利弊、信息来源。</li>
+  <li>始终建立 API 设计指南 —— 即使只有你一个人，即使没有成体系的治理。</li>
+  <li>在指南里列出（由 ADR 支撑的）通用或领域特定的原则与规则，并把它们组织成可操作的配方。</li>
+  <li>可以用 OpenAPI 模板、共享组件、工具，以及关于设计流程和实现的说明来扩充指南。</li>
+  <li>从覆盖典型的增、查、搜、改、删操作的最小配方开始；只在出现新问题时扩充。</li>
+  <li>只添加有意义、能在一致性、效率、安全或互操作性上带来价值的规则。</li>
+  <li>谨慎地修改指南，避免无意中引入破坏性修改。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      这是你第一次为公司设计 API。为了在 <code>GET /contracts</code> 和 <code>GET /contract</code> 之间做选择，去看公司的另一个 API 是怎么做的，可以吗？
+      <details class="ans"><summary>参考答案</summary>
+        可以参考，但不够可靠。一个 API 不能代表整个公司的做法 —— 别的团队可能用了另一种，那个 API 可能已经过时，或者它本身就做错了。
+        应该先查公司的 API 设计指南；没有的话多看几个 API，并对照外界的通行做法（复数更常见），然后把决定和理由记成 ADR，作为未来指南的第一块砖。
+      </details>
+    </li>
+    <li>
+      你正在起草 API 设计指南。因为文件上传下载比较棘手，你打算一开始就加上相关的配方。该不该这么做？
+      <details class="ans"><summary>参考答案</summary>
+        一般不该。起步时应聚焦五种典型操作。文件上传牵涉基础设施和安全，在真正遇到这个需求、看清全貌之前定下的设计很可能不合用，还无法实战检验。
+        例外：如果你们已经有成熟的、反复使用的文件处理方案，把它记录下来是有价值的。
+      </details>
+    </li>
+    <li>
+      你在一家物流公司设计一个管理车队的 API。要不要在公司的设计指南里加一条规则：「所有车辆都用 <code>/vehicles</code> 资源表示」？
+      <details class="ans"><summary>参考答案</summary>
+        不要。这是某一个 API 的局部决定，不是跨 API 的通用规则。而且第 5 章说过，同一个概念在不同的场景下可能需要不同的资源（车队管理眼中的车辆、配送调度眼中的车辆）。
+        适合进指南的是更通用的东西：「集合资源使用复数名词」「车辆必须用车架号（VIN）标识」。
+      </details>
+    </li>
+    <li>
+      一份设计指南以「规则 1：基础 URL 包含 API 的名称和版本」开头，以「规则 789：<code>201 Created</code> 必须返回 <code>Location</code> 头」结尾。问题是什么？
+      <details class="ans"><summary>参考答案</summary>
+        它只是一张 789 条规则的流水账，没有人能记住，也没法在面对具体设计任务时知道该用哪几条。
+        应该把规则组织成可操作的配方（「如何创建一个元素」里自然会包含规则 789），配上示例和模板，并用 linter 自动检查。
+        另外值得逐条审视：789 条里肯定有不少说不出理由、没有价值的规则。
+      </details>
+    </li>
+    <li>挑一个你团队里反复争论过的设计问题，按 MADR 模板写一份 ADR。再把本章的检查脚本跑在第 6 章的 OpenAPI 文档上，然后故意删掉一个 <code>500</code> 响应看看效果。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

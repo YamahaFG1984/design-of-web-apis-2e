@@ -1,0 +1,1200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 12 章 · 设计安全的 API — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="12">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 12 章</span>
+<h1>设计安全的 API</h1>
+<p class="lede">
+  从这一章起进入第三层：<strong>约束</strong>。前面设计出的 API 做对了事，也好用，但如果不安全，一切归零。
+  安全不能留到最后交给安全专家「补上」—— 购物网站的用户打开浏览器开发者工具，就能在商品接口的响应里看到进货价；
+  改一下 URL 里的订单号，就能看到别人的订单。这些都是<strong>设计</strong>阶段就该堵住的洞。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解一次 API 调用中安全发生在哪三个层面，以及设计能预防哪些问题</li>
+    <li>只暴露必要的数据和操作（最小化 API 表面）</li>
+    <li>让操作的行为取决于「谁在调用」，并把这些规则写进 OpenAPI</li>
+    <li>保证数据完整性：幂等、防重放、条件更新</li>
+    <li>避免协议和架构层面的泄露：URL 里不放敏感数据</li>
+    <li>用作用域（scope）划分访问权限，并在 OpenAPI 里描述</li>
+    <li>安全地报错：<code>401</code>、<code>403</code>、<code>404</code>、<code>500</code> 各在什么时候用</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="overview">API 安全概览</h2>
+
+<p>
+  <strong>任何</strong> API 都要保护，包括不对互联网开放的内部 API：网络一旦被攻破，内部 API 就暴露无遗；
+  安全措施不足还可能导致有人把生产环境的 API 当成开发环境的来调，直接弄坏系统。
+</p>
+
+<h3>一次 API 调用里发生了什么</h3>
+
+<p>以购物网站调用购物 API 为例（机制类似 OAuth 2.0 / OpenID Connect）：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 360" role="img" aria-label="一次安全的 API 调用：网站先向授权服务器获取访问令牌，再带着令牌调用 API，API 实现根据令牌信息做检查后返回数据">
+  <rect class="bx-b" x="20" y="120" width="140" height="110" rx="12"/>
+  <text class="ttl on-b" x="90" y="146" text-anchor="middle">购物网站</text>
+  <text class="sm" x="90" y="166" text-anchor="middle">消费者</text>
+  <text class="sm" x="90" y="198" text-anchor="middle">用户：Spike</text>
+
+  <rect class="bx-p" x="310" y="20" width="170" height="74" rx="12"/>
+  <text class="ttl on-p" x="395" y="46" text-anchor="middle">授权服务器</text>
+  <text class="sm" x="395" y="66" text-anchor="middle">认证用户、签发令牌</text>
+  <text class="sm" x="395" y="82" text-anchor="middle">保存令牌关联的信息</text>
+
+  <rect class="bx-a" x="310" y="150" width="170" height="190" rx="12"/>
+  <text class="ttl on-a" x="395" y="174" text-anchor="middle">购物 API</text>
+  <text class="sm" x="395" y="192" text-anchor="middle">资源服务器（实现）</text>
+  <text class="sm" x="395" y="224" text-anchor="middle">④ 这个消费者能用</text>
+  <text class="sm" x="395" y="240" text-anchor="middle">购物 API 吗？</text>
+  <text class="sm" x="395" y="264" text-anchor="middle">⑤ 它有调用 GET /orders</text>
+  <text class="sm" x="395" y="280" text-anchor="middle">所需的 order 作用域吗？</text>
+  <text class="sm" x="395" y="304" text-anchor="middle">⑥ 取出<tspan font-weight="700">用户 123</tspan>的订单</text>
+
+  <path class="ln-p" d="M130 120 C150 70 240 50 308 50" marker-end="url(#ar-p)"/>
+  <text class="sm" x="150" y="34" text-anchor="middle">① 我是 client_id=123</text>
+  <path class="ln-p" d="M308 72 C250 76 180 90 150 120" marker-end="url(#ar-p)"/>
+  <text class="sm" x="262" y="104" text-anchor="middle">访问令牌 HPOI9</text>
+
+  <path class="ln-b" d="M160 196 H308" marker-end="url(#ar-b)"/>
+  <text class="sm" x="234" y="174" text-anchor="middle">② GET /orders</text>
+  <text class="sm" x="234" y="190" text-anchor="middle">带着令牌 HPOI9</text>
+  <text class="sm on-g" x="234" y="212" text-anchor="middle">HTTPS 加密通道</text>
+  <path class="ln-g" d="M308 300 C240 300 200 260 150 232" marker-end="url(#ar-g)"/>
+  <text class="sm" x="212" y="300" text-anchor="middle">⑦ 200 + 订单</text>
+
+  <path class="ln-p" d="M395 150 V96" marker-end="url(#ar-p)"/>
+  <text class="sm" x="402" y="126">③ 这个令牌是谁？</text>
+
+  <rect class="bx" x="530" y="20" width="214" height="180" rx="10"/>
+  <text class="ttl" x="544" y="42">令牌 HPOI9 关联的信息</text>
+  <text class="mono sm" x="544" y="64">consumer:</text>
+  <text class="mono sm" x="544" y="80">  name: Shopping Website</text>
+  <text class="mono sm" x="544" y="96">  apis:</text>
+  <text class="mono sm" x="544" y="112">    - name: Shopping API</text>
+  <text class="mono sm on-a" x="544" y="128">      scopes: [product, order]</text>
+  <text class="mono sm" x="544" y="148">user:</text>
+  <text class="mono sm on-a" x="544" y="164">  id: 123</text>
+  <text class="sm" x="544" y="188">→ 实现唯一可以信任的输入</text>
+  <path class="ln-d" d="M480 56 H528"/>
+
+  <rect class="bx-g" x="530" y="220" width="214" height="120" rx="10"/>
+  <text class="ttl on-g" x="544" y="242">安全发生在三个层面</text>
+  <text class="sm" x="544" y="264">1. 通道加密（HTTPS）</text>
+  <text class="sm" x="544" y="284">2. 只有已知的消费者（带合适的</text>
+  <text class="sm" x="556" y="300">作用域）和已知的用户能调用</text>
+  <text class="sm" x="544" y="320">3. 实现根据调用者的上下文行事</text>
+</svg>
+<figcaption>图 12-1　不管令牌是怎么拿到的，API 实现总是要检查它，并且根据它关联的信息来决定做什么、返回什么</figcaption>
+</figure>
+
+<h3>设计能预防的安全问题</h3>
+
+<p>API 设计者管不了授权服务器怎么存令牌，也挡不住 DDoS。但下面这些问题，设计阶段就能预防：</p>
+
+<div class="tw">
+<table>
+  <tr><th>问题</th><th>例子</th><th>本章对应</th></tr>
+  <tr><td>暴露了过多的数据或操作</td><td>商品数据里带着进货价；报错信息泄露了服务器 IP</td><td>只暴露必要的</td></tr>
+  <tr><td>把业务逻辑交给消费者</td><td>改地址要消费者先停用旧地址再加新地址（第 2 章）</td><td>—</td></tr>
+  <tr><td>数据完整性被破坏</td><td>两个应用同时更新同一位客户，后者覆盖前者；重试导致重复下单</td><td>数据完整性</td></tr>
+  <tr><td>因协议或架构而泄露</td><td><code>GET /orders?card=12345</code> —— 卡号进了所有日志</td><td>协议与架构</td></tr>
+  <tr><td>作用域范围不当</td><td>面向顾客的网站拥有 <code>product</code> 作用域，于是也能调用「修改商品」</td><td>作用域</td></tr>
+  <tr><td>实现层的检查不足</td><td><code>GET /orders/{orderId}</code> 没检查订单是不是这个用户的</td><td>按上下文行事</td></tr>
+</table>
+</div>
+
+<div class="box deep">
+  <div class="t">&#128218; OWASP</div>
+  <p>开放式 Web 应用程序安全项目（<a href="https://owasp.org">OWASP</a>）是专注于软件安全的非营利组织。强烈建议读一读它的 <a href="https://owasp.org/API-Security/">API Security Top 10</a>，里面列举了最典型的 API 安全问题。</p>
+</div>
+
+<h3>什么时候、怎么做</h3>
+<p>
+  安全贯穿设计的每一步，但为了讨论高效，<strong>在 API 做对了事、也打磨得好用之后</strong>集中审视一遍，这时面对的是完整的设计。
+  之后每次修改都要从安全角度再看。设计对安全的贡献归纳为四点：
+</p>
+<ol>
+  <li><strong>不暴露提供者视角</strong>（第 2 章）—— 聚焦用户需求本身就是安全的支柱；</li>
+  <li><strong>最小化 API 表面</strong>；</li>
+  <li><strong>保证数据完整性</strong>；</li>
+  <li><strong>让实现者拿到所需的全部信息</strong> —— 很多安全漏洞的根源，就是设计时没说清楚、实现时只能猜。</li>
+</ol>
+
+<h2 id="surface">只暴露必要的数据和操作</h2>
+
+<h3>什么是敏感数据和敏感操作</h3>
+<p>
+  <strong>敏感数据</strong>一旦泄露，会给组织或相关个人带来安全威胁或损失。<strong>敏感操作</strong>则是操纵敏感数据、或触及关键业务/技术流程的操作。以银行 API 为例：
+</p>
+<ul>
+  <li>银行卡号和有效期：泄露即可能被盗刷；</li>
+  <li>户主的姓名、电话、地址：这类<strong>个人身份信息（PII）</strong>可能被用于诈骗和身份盗用，并且受 GDPR 等法规约束；</li>
+  <li>各项银行服务的内部成本：商业机密；</li>
+  <li>「审批异常转账」：只有特定的银行员工才能执行。</li>
+</ul>
+
+<div class="box warn">
+  <div class="t">&#9888; 你不能自己判断什么是敏感的</div>
+  <p>去问首席信息安全官（CISO）、数据保护官（DPO）、法务或其他有资质的专家。组织里往往已经有敏感数据清单，设计之前先拿到它。把一份完整的 OpenAPI 文档交给安全方面的同事审阅也很有帮助。</p>
+</div>
+
+<h3>四种手段</h3>
+
+<h4>① 质疑它是否该存在</h4>
+<p>
+  遇到敏感的数据或操作，第一反应应该是：<strong>它真的需要在这里吗？</strong>账户数据里要带银行卡列表吗？「审批异常转账」要暴露在互联网上吗？
+  不敏感的也要问 —— <em>最安全的数据是不存在的数据</em>。如果没有任何用例需要「读取户主资料」，这个操作就不该出现。
+</p>
+
+<h4>② 修改数据，降低敏感度</h4>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="通过截断、删除、归类、区间化、同态加密等手段降低数据敏感度">
+  <rect class="bx-r" x="20" y="20" width="330" height="120" rx="10"/>
+  <text class="ttl on-r" x="34" y="42">敏感：银行卡与持卡人</text>
+  <text class="mono sm" x="34" y="62">"number": "1111 2222 3333 4444",</text>
+  <text class="mono sm" x="34" y="78">"holder": {</text>
+  <text class="mono sm" x="34" y="94">  "name": "MOTOKO KUSANAGI",</text>
+  <text class="mono sm" x="34" y="110">  "phone": "+8123456789",</text>
+  <text class="mono sm" x="34" y="126">  "address": { … } }</text>
+
+  <path class="ln-g" d="M350 80 H408" marker-end="url(#ar-g)"/>
+
+  <rect class="bx-g" x="410" y="20" width="330" height="120" rx="10"/>
+  <text class="ttl on-g" x="424" y="42">降敏后</text>
+  <text class="mono sm" x="424" y="62">"number": "4444",</text>
+  <text class="sm on-g" x="726" y="62" text-anchor="end">截断：只留后四位</text>
+  <text class="mono sm" x="424" y="78">"holder": {</text>
+  <text class="mono sm" x="424" y="94">  "name": "MOTOKO KUSANAGI"</text>
+  <text class="mono sm" x="424" y="110">}</text>
+  <text class="sm on-g" x="726" y="94" text-anchor="end">删除部分 PII</text>
+
+  <rect class="bx-r" x="20" y="160" width="330" height="120" rx="10"/>
+  <text class="ttl on-r" x="34" y="182">敏感：交给第三方做统计的交易</text>
+  <text class="mono sm" x="34" y="204">"merchant": {</text>
+  <text class="mono sm" x="34" y="220">  "name": "Junku",</text>
+  <text class="mono sm" x="34" y="236">  "address": { … } },</text>
+  <text class="mono sm" x="34" y="252">"amount": 12.3</text>
+
+  <path class="ln-g" d="M350 220 H408" marker-end="url(#ar-g)"/>
+
+  <rect class="bx-g" x="410" y="160" width="330" height="120" rx="10"/>
+  <text class="ttl on-g" x="424" y="182">降敏后</text>
+  <text class="mono sm" x="424" y="204">"type": "bookshop",</text>
+  <text class="sm on-g" x="726" y="204" text-anchor="end">用类别替换商户</text>
+  <text class="mono sm" x="424" y="228">"amount": "low"</text>
+  <text class="sm on-g" x="726" y="228" text-anchor="end">用区间替换金额</text>
+  <text class="mono sm" x="424" y="252">"amount": "675…"</text>
+  <text class="sm on-g" x="726" y="252" text-anchor="end">或同态加密：仍可计算</text>
+</svg>
+<figcaption>图 12-2　处理敏感数据时，先查有没有相关的安全标准（如银行卡数据的 PCI 标准）</figcaption>
+</figure>
+
+<h4>③ 拆分操作，分离关注点</h4>
+<p>
+  如果「审批异常转账」是通过「更新转账」把状态改掉来完成的，那么一个操作里就混了敏感动作（审批）和不敏感动作（改执行日期、改金额）。
+  拆出独立的「审批异常转账」操作：关注点分开了，敏感动作更显眼，访问控制也更简单。
+</p>
+
+<h4>④ 把敏感操作放进专门的 API</h4>
+<p>
+  更进一步：把「审批异常转账」移到独立的<strong>转账管理 API</strong>，从根本上降低把它错误授权给普通消费者的风险。
+  但新 API 必须自成一体（第 11 章）—— 审批之前得先能列出待审批的转账。回到能力画布，找出审批用例需要的所有操作。
+  两个 API 可能有同名但略有不同的操作：管理版的「列出转账」会多返回发起人的身份、IP、设备信息，而且不需要「列出付款方和收款方」。
+</p>
+
+<h2 id="context">让操作的行为取决于上下文</h2>
+
+<p>
+  表面最小化了，泄露仍然可能发生在<strong>运行时</strong>：Alice 不该能访问 Bob 的账户 —— 除非 Alice 是负责 Bob 的银行顾问。
+  路径、方法和数据模型本身<em>表达不出</em>这类规则。如果不明确写出来，实现者只能猜。
+</p>
+
+<h3>把「谁能看什么、做什么」写进 OpenAPI</h3>
+
+<p>
+  <code>GET /accounts</code> 返回账户列表。哪些账户？不说清楚的话，实现很可能返回<em>所有</em>账户。
+  对做全局财务核查的内部应用这也许没问题，对手机银行 App 则是灾难性的数据泄露。
+</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：12. …/Listing 12.1">
+<pre>
+paths:
+  /accounts:
+    get:
+      summary: List accounts
+      responses:
+        "200":
+          description: |
+            The returned account lists vary depending on the security context:
+            - Account owner user: returns accounts owned by the end user.
+            - Bank advisor user: returns accounts owned by the account
+              owners that the bank advisor manages.
+            - Partner application: returns accounts linked to partner identifier.
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; description 支持 Markdown</div>
+  <p>OpenAPI 里所有的 <code>description</code> 都支持 Markdown。<code>|</code> 是 YAML 的多行文本写法。充分利用操作、响应、属性三个层面的描述，把安全规则写全。</p>
+</div>
+
+<p>同样的规则适用于<strong>所有</strong>操作的<strong>所有</strong>输入：</p>
+<ul>
+  <li><code>GET /accounts/{accountId}</code>：只返回给拥有它的户主，或负责该户主的顾问；</li>
+  <li><code>POST /transfers</code> 请求体里的付款账户：如果调用者是户主，要检查他确实拥有这个账户；如果是顾问，要检查账户属于他负责的客户；</li>
+  <li>角色和权限：有些顾问可以办理超过 10 万美元的对外转账，有些不行 —— 写在操作的描述里；</li>
+  <li>属性级的差异：户主能看到交易的商户地址，顾问不能 —— 在 <code>merchant</code> 属性的描述里写「仅返回给户主」。</li>
+</ul>
+
+<div class="box warn">
+  <div class="t">&#9888; 不透明不等于安全</div>
+  <p>
+    即使标识符是无法猜测的 UUID（<code>ff0d991d-6fcf-4349-…</code>），这些检查也<strong>必须</strong>做。
+    输入数据永远要和令牌里的安全上下文核对 —— 后者是实现<strong>唯一可以信任</strong>的输入。
+  </p>
+</div>
+
+<h3>用设计收窄访问范围</h3>
+<p>
+  顾问替某位客户办转账时，「列出付款方」如果返回他负责的<em>所有</em>客户的账户，就很容易选错人。
+  把客户 ID 放进路径：<code>GET /owners/{ownerId}/sources</code>，只返回这一位客户的。
+  户主自己用的 App 则可以用一个魔法标识符 <code>me</code>：<code>GET /owners/me/sources</code>。
+  这算不上强安全措施，但能减少代价高昂的失误。
+</p>
+
+<h3>实现：按安全上下文过滤和检查</h3>
+
+<div class="tabs" data-title="根据令牌里的上下文决定返回什么">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+from dataclasses import dataclass
+from fastapi import Depends, FastAPI, HTTPException
+
+app = FastAPI()
+
+@dataclass
+class SecurityContext:            # 由令牌解析而来 —— 唯一可以信任的输入
+    user_id: str
+    profile: str                  # "owner" | "advisor"
+    scopes: set[str]
+
+def require(*accepted: str):
+    """作用域检查（通常在 API 网关上做，这里为演示写在实现里）"""
+    def check(ctx: SecurityContext = Depends(current_context)) -&gt; SecurityContext:
+        if not ctx.scopes &amp; set(accepted):
+            raise HTTPException(403, f"Missing {' or '.join(accepted)} scope")
+        return ctx
+    return check
+
+@app.get("/accounts")
+def list_accounts(ctx: SecurityContext = Depends(require("account:read", "account:all"))):
+    if ctx.profile == "owner":
+        return accounts.owned_by(ctx.user_id)             # 户主：只有自己的
+    return accounts.of_owners_managed_by(ctx.user_id)     # 顾问：只有自己负责的客户的
+
+@app.get("/accounts/{account_id}")
+def read_account(account_id: str,
+                 ctx: SecurityContext = Depends(require("account:read", "account:all"))):
+    account = accounts.find(account_id)
+    if account is None:
+        raise HTTPException(404, f"Account {account_id} doesn't exist")
+
+    if ctx.profile == "owner" and ctx.user_id not in account.owner_ids:
+        # 户主无法通过申请权限来解决 → 404，不透露账户存在
+        raise HTTPException(404, f"Account {account_id} doesn't exist")
+
+    if ctx.profile == "advisor" and not advisors.manages(ctx.user_id, account):
+        # 顾问可以去申请权限 → 403
+        raise HTTPException(403, f"Missing permission to access account {account_id}")
+
+    return account
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+import { Hono } from "hono";
+import { createMiddleware } from "hono/factory";
+
+// 由令牌解析而来 —— 唯一可以信任的输入
+type SecurityContext = { userId: string; profile: "owner" | "advisor"; scopes: string[] };
+const app = new Hono&lt;{ Variables: { ctx: SecurityContext } }&gt;();
+
+/** 作用域检查（通常在 API 网关上做，这里为演示写在实现里） */
+const requireScope = (...accepted: string[]) =&gt;
+  createMiddleware&lt;{ Variables: { ctx: SecurityContext } }&gt;(async (c, next) =&gt; {
+    if (!c.get("ctx").scopes.some((s) =&gt; accepted.includes(s))) {
+      return c.json({ message: `Missing ${accepted.join(" or ")} scope` }, 403);
+    }
+    await next();
+  });
+
+const canRead = requireScope("account:read", "account:all");
+
+app.get("/accounts", canRead, async (c) =&gt; {
+  const ctx = c.get("ctx");
+  return c.json(
+    ctx.profile === "owner"
+      ? await accounts.ownedBy(ctx.userId)                 // 户主：只有自己的
+      : await accounts.ofOwnersManagedBy(ctx.userId),      // 顾问：只有自己负责的客户的
+  );
+});
+
+app.get("/accounts/:accountId", canRead, async (c) =&gt; {
+  const ctx = c.get("ctx");
+  const accountId = c.req.param("accountId");
+  const account = await accounts.find(accountId);
+  const notFound = () =&gt; c.json({ message: `Account ${accountId} doesn't exist` }, 404);
+
+  if (!account) return notFound();
+
+  if (ctx.profile === "owner" &amp;&amp; !account.ownerIds.includes(ctx.userId)) {
+    return notFound();        // 户主无法通过申请权限来解决 → 404，不透露账户存在
+  }
+  if (ctx.profile === "advisor" &amp;&amp; !(await advisors.manages(ctx.userId, account))) {
+    return c.json({ message: `Missing permission to access account ${accountId}` }, 403);  // 可申请权限 → 403
+  }
+  return c.json(account);
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot + Spring Security">
+<pre>
+@RestController
+@RequestMapping("/accounts")
+public class AccountController {
+
+    // 作用域检查（通常在 API 网关上做；这里用 Spring Security 的注解演示）
+    @GetMapping
+    @PreAuthorize("hasAnyAuthority('SCOPE_account:read', 'SCOPE_account:all')")
+    public List&lt;Account&gt; listAccounts(@AuthenticationPrincipal BankUser user) {
+        // user 来自令牌 —— 唯一可以信任的输入
+        return user.isOwner()
+            ? accounts.ownedBy(user.id())                  // 户主：只有自己的
+            : accounts.ofOwnersManagedBy(user.id());       // 顾问：只有自己负责的客户的
+    }
+
+    @GetMapping("/{accountId}")
+    @PreAuthorize("hasAnyAuthority('SCOPE_account:read', 'SCOPE_account:all')")
+    public Account readAccount(@PathVariable String accountId,
+                               @AuthenticationPrincipal BankUser user) {
+        Account account = accounts.find(accountId)
+            .orElseThrow(() -&gt; notFound(accountId));
+
+        if (user.isOwner() &amp;&amp; !account.ownerIds().contains(user.id())) {
+            throw notFound(accountId);   // 户主无法通过申请权限来解决 → 404，不透露账户存在
+        }
+        if (user.isAdvisor() &amp;&amp; !advisors.manages(user.id(), account)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN,      // 可申请权限 → 403
+                "Missing permission to access account " + accountId);
+        }
+        return account;
+    }
+
+    private ResponseStatusException notFound(String accountId) {
+        return new ResponseStatusException(HttpStatus.NOT_FOUND,
+            "Account " + accountId + " doesn't exist");
+    }
+}
+</pre>
+</div>
+</div>
+
+<h2 id="integrity">保证数据完整性</h2>
+
+<p>消费者和用户都只做了被允许的事，数据仍然可能被弄坏。两种常见情形：</p>
+
+<ul>
+  <li><strong>请求重放。</strong>转账请求发出后没收到响应（网络抖动、<code>500</code>）。服务端可能其实已经处理了；消费者重试一次，钱就转了两次。</li>
+  <li><strong>基于过期数据的更新。</strong>见下图。</li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="两个消费者基于同一份旧数据先后更新同一位户主，后一次更新把前一次的修改覆盖回了旧值">
+  <rect class="bx" x="20" y="24" width="220" height="200" rx="10"/>
+  <text class="ttl" x="130" y="46" text-anchor="middle">① A 和 B 都读取</text>
+  <text class="mono sm" x="34" y="68">GET /owners/123</text>
+  <text class="mono sm" x="34" y="92">200 OK</text>
+  <text class="mono sm" x="34" y="108">{ "email": "old@email.com",</text>
+  <text class="mono sm" x="34" y="124">  "jobTitle": "Old Title" }</text>
+  <rect class="bx-d" x="34" y="150" width="192" height="58" rx="6"/>
+  <text class="sm" x="44" y="168">数据库</text>
+  <text class="mono sm" x="44" y="184">email:    old@email.com</text>
+  <text class="mono sm" x="44" y="200">jobTitle: Old Title</text>
+
+  <rect class="bx-g" x="270" y="24" width="220" height="200" rx="10"/>
+  <text class="ttl on-g" x="380" y="46" text-anchor="middle">② A 改邮箱</text>
+  <text class="mono sm" x="284" y="68">PUT /owners/123</text>
+  <text class="mono sm on-g" x="284" y="92" font-weight="700">{ "email": "new@email.com",</text>
+  <text class="mono sm" x="284" y="108">  "jobTitle": "Old Title" }</text>
+  <rect class="bx-d" x="284" y="150" width="192" height="58" rx="6"/>
+  <text class="sm" x="294" y="168">数据库</text>
+  <text class="mono sm on-g" x="294" y="184" font-weight="700">email:    new@email.com</text>
+  <text class="mono sm" x="294" y="200">jobTitle: Old Title</text>
+
+  <rect class="bx-r" x="520" y="24" width="220" height="200" rx="10"/>
+  <text class="ttl on-r" x="630" y="46" text-anchor="middle">③ B 改职位（用的是旧数据）</text>
+  <text class="mono sm" x="534" y="68">PUT /owners/123</text>
+  <text class="mono sm on-r" x="534" y="92" font-weight="700">{ "email": "old@email.com",</text>
+  <text class="mono sm" x="534" y="108">  "jobTitle": "New Title" }</text>
+  <rect class="bx-d" x="534" y="150" width="192" height="58" rx="6"/>
+  <text class="sm" x="544" y="168">数据库</text>
+  <text class="mono sm on-r" x="544" y="184" font-weight="700">email:    old@email.com  &#10007;</text>
+  <text class="mono sm" x="544" y="200">jobTitle: New Title</text>
+
+  <path class="ln" d="M240 124 H268" marker-end="url(#ar)"/>
+  <path class="ln" d="M490 124 H518" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 12-3　A 的修改被 B 悄悄还原了。<code>PATCH</code> 如果重发了未修改的数据，也有同样的问题</figcaption>
+</figure>
+
+<h3>安全与幂等</h3>
+
+<div class="tw">
+<table>
+  <tr><th>方法</th><th>安全<br><small>不改变服务端状态</small></th><th>幂等<br><small>重复执行，服务端状态相同</small></th><th>能放心重试吗</th></tr>
+  <tr><td><code>GET</code></td><td>&#10003;</td><td>&#10003;</td><td>可以</td></tr>
+  <tr><td><code>DELETE</code></td><td>&#10007;</td><td>&#10003;</td><td>可以：第一次删掉了，之后可能返回 <code>404</code>，但服务端状态不再变化</td></tr>
+  <tr><td><code>PUT</code></td><td>&#10007;</td><td>&#10003;</td><td>幂等，但不保证完整性 —— 数据可能已被别人改过（见上图）</td></tr>
+  <tr><td><code>POST</code></td><td>&#10007;</td><td>&#10007;</td><td><strong>不行</strong>：重放 <code>POST /transfers</code> 会转好几次钱</td></tr>
+  <tr><td><code>PATCH</code></td><td>&#10007;</td><td>&#10007;</td><td>不行</td></tr>
+</table>
+</div>
+
+<p>前提是<strong>实现确实遵守了</strong>这些语义。这也是第 4 章说「方法描述的是接口，但实现必须符合其特性」的原因。</p>
+
+<h3>防止请求重放：幂等键</h3>
+<p>
+  让消费者为每个请求生成一个唯一标识符（通常是 UUID），放在请求头里。IETF 的一份草案建议叫 <strong><code>Idempotency-Key</code></strong>。
+  服务端发现同一个键已经处理过，就不再重复执行，返回 <code>409 Conflict</code>。这样消费者就可以放心地自动重试。
+</p>
+<p>
+  还可以加<strong>业务层面</strong>的检查：手机 App 的用户看到报错后手动重试，每次都是新的幂等键。
+  如果服务端在一分钟内收到金额、付款方、收款方完全相同的转账，也返回 <code>409</code>；
+  用户确实想再转一笔的话，带上 <code>Confirm-Duplicate: true</code> 请求头强制执行。
+</p>
+
+<h3>条件更新：ETag 与 If-Match</h3>
+
+<p>HTTP 有一套标准的<strong>条件请求</strong>机制：「仅当条件成立时才执行这个请求」。用它来保证更新是基于最新数据的：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="读取时返回 ETag，更新时用 If-Match 带回；数据没变则更新成功，变了则返回 412">
+  <rect class="bx" x="20" y="24" width="220" height="190" rx="10"/>
+  <text class="ttl" x="130" y="46" text-anchor="middle">① A 和 B 都读取</text>
+  <text class="mono sm" x="34" y="68">GET /owners/123</text>
+  <text class="mono sm" x="34" y="92">200 OK</text>
+  <text class="mono sm on-a" x="34" y="108" font-weight="700">ETag: "z567dff"</text>
+  <text class="mono sm" x="34" y="124">{ "email": "old@…", … }</text>
+  <text class="sm" x="130" y="164" text-anchor="middle">ETag（实体标签）标识</text>
+  <text class="sm" x="130" y="182" text-anchor="middle">这份数据的「版本」</text>
+  <text class="sm" x="130" y="200" text-anchor="middle">（如修改时间或内容的哈希）</text>
+
+  <rect class="bx-g" x="270" y="24" width="220" height="190" rx="10"/>
+  <text class="ttl on-g" x="380" y="46" text-anchor="middle">② A 更新</text>
+  <text class="mono sm" x="284" y="68">PUT /owners/123</text>
+  <text class="mono sm on-a" x="284" y="84" font-weight="700">If-Match: "z567dff"</text>
+  <text class="mono sm" x="284" y="100">{ "email": "new@…", … }</text>
+  <text class="sm" x="380" y="132" text-anchor="middle">「如果数据还是这个版本，</text>
+  <text class="sm" x="380" y="148" text-anchor="middle">就更新」</text>
+  <text class="mono on-g" x="380" y="182" text-anchor="middle" font-weight="700">200 OK</text>
+  <text class="sm" x="380" y="200" text-anchor="middle">版本匹配 → 更新，版本随之改变</text>
+
+  <rect class="bx-r" x="520" y="24" width="220" height="190" rx="10"/>
+  <text class="ttl on-r" x="630" y="46" text-anchor="middle">③ B 更新（旧版本）</text>
+  <text class="mono sm" x="534" y="68">PUT /owners/123</text>
+  <text class="mono sm on-a" x="534" y="84" font-weight="700">If-Match: "z567dff"</text>
+  <text class="mono sm" x="534" y="100">{ "jobTitle": "New…", … }</text>
+  <text class="sm" x="630" y="132" text-anchor="middle">版本已经不匹配了</text>
+  <text class="mono on-r" x="630" y="182" text-anchor="middle" font-weight="700">412 Precondition Failed</text>
+  <text class="sm" x="630" y="200" text-anchor="middle">B 需要重新读取再更新</text>
+
+  <path class="ln" d="M240 118 H268" marker-end="url(#ar)"/>
+  <path class="ln" d="M490 118 H518" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 12-4　也可以用 <code>Last-Modified</code> 响应头配合 <code>If-Unmodified-Since</code> 请求头，原理相同</figcaption>
+</figure>
+
+<p>要让所有更新都安全，可以在 OpenAPI 里把所有 <code>PUT</code>/<code>PATCH</code> 的 <code>If-Match</code> 请求头标为 <code>required</code>。这是典型的应该写进团队设计指南的规则（第 16 章）。</p>
+
+<div class="tabs" data-title="条件更新 + 幂等键">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+import hashlib, json
+from fastapi import FastAPI, Header, HTTPException, Response
+
+app = FastAPI()
+
+def etag_of(resource: dict) -&gt; str:
+    digest = hashlib.sha256(json.dumps(resource, sort_keys=True).encode()).hexdigest()
+    return f'"{digest[:16]}"'
+
+@app.get("/owners/{owner_id}")
+def read_owner(owner_id: str, response: Response):
+    owner = owners.get(owner_id)
+    response.headers["ETag"] = etag_of(owner)          # 返回数据的「版本」
+    return owner
+
+@app.put("/owners/{owner_id}")
+def update_owner(owner_id: str, body: dict, response: Response,
+                 if_match: str = Header(...)):          # 必填：没有 If-Match 就不让更新
+    current = owners.get(owner_id)
+    if if_match != etag_of(current):                    # 读取之后数据被别人改过了
+        raise HTTPException(412, "The owner has been modified since you read it; "
+                                 "read it again and retry")
+    updated = owners.replace(owner_id, body)
+    response.headers["ETag"] = etag_of(updated)
+    return updated
+
+
+@app.post("/transfers", status_code=201)
+def create_transfer(body: dict, idempotency_key: str = Header(...)):
+    # 同一个键只处理一次：消费者可以放心地自动重试
+    if idempotency.seen(idempotency_key):
+        raise HTTPException(409, "A request with this Idempotency-Key has already been processed")
+    idempotency.remember(idempotency_key)
+    return transfers.create(body)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+import { Hono } from "hono";
+import { createHash } from "node:crypto";
+
+const app = new Hono();
+
+const etagOf = (resource: unknown) =&gt;
+  `"${createHash("sha256").update(JSON.stringify(resource)).digest("hex").slice(0, 16)}"`;
+
+app.get("/owners/:ownerId", (c) =&gt; {
+  const owner = owners.get(c.req.param("ownerId"));
+  c.header("ETag", etagOf(owner));                      // 返回数据的「版本」
+  return c.json(owner);
+});
+
+app.put("/owners/:ownerId", async (c) =&gt; {
+  const ifMatch = c.req.header("If-Match");
+  if (!ifMatch) {                                       // 必填：没有 If-Match 就不让更新
+    return c.json({ message: "If-Match header is required" }, 428);   // 428 Precondition Required
+  }
+  const ownerId = c.req.param("ownerId");
+  if (ifMatch !== etagOf(owners.get(ownerId))) {        // 读取之后数据被别人改过了
+    return c.json(
+      { message: "The owner has been modified since you read it; read it again and retry" }, 412);
+  }
+  const updated = owners.replace(ownerId, await c.req.json());
+  c.header("ETag", etagOf(updated));
+  return c.json(updated);
+});
+
+app.post("/transfers", async (c) =&gt; {
+  const key = c.req.header("Idempotency-Key");
+  if (!key) return c.json({ message: "Idempotency-Key header is required" }, 400);
+  // 同一个键只处理一次：消费者可以放心地自动重试
+  if (idempotency.seen(key)) {
+    return c.json({ message: "A request with this Idempotency-Key has already been processed" }, 409);
+  }
+  idempotency.remember(key);
+  return c.json(transfers.create(await c.req.json()), 201);
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+@RestController
+public class OwnerController {
+
+    private String etagOf(Owner owner) {
+        return "\"" + Integer.toHexString(owner.hashCode()) + "\"";   // 也可以用版本号或修改时间
+    }
+
+    @GetMapping("/owners/{ownerId}")
+    public ResponseEntity&lt;Owner&gt; readOwner(@PathVariable String ownerId) {
+        Owner owner = owners.get(ownerId);
+        return ResponseEntity.ok().eTag(etagOf(owner)).body(owner);   // 返回数据的「版本」
+    }
+
+    @PutMapping("/owners/{ownerId}")
+    public ResponseEntity&lt;Owner&gt; updateOwner(
+            @PathVariable String ownerId,
+            @RequestHeader("If-Match") String ifMatch,                // 必填：没有就不让更新
+            @RequestBody OwnerReplacement body) {
+        if (!ifMatch.equals(etagOf(owners.get(ownerId)))) {           // 读取之后数据被别人改过了
+            throw new ResponseStatusException(HttpStatus.PRECONDITION_FAILED,
+                "The owner has been modified since you read it; read it again and retry");
+        }
+        Owner updated = owners.replace(ownerId, body);
+        return ResponseEntity.ok().eTag(etagOf(updated)).body(updated);
+    }
+
+    @PostMapping("/transfers")
+    public ResponseEntity&lt;Transfer&gt; createTransfer(
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody TransferCreation body) {
+        // 同一个键只处理一次：消费者可以放心地自动重试
+        if (!idempotency.rememberIfAbsent(idempotencyKey)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                "A request with this Idempotency-Key has already been processed");
+        }
+        Transfer created = transfers.create(body);
+        return ResponseEntity.created(URI.create("/transfers/" + created.id())).body(created);
+    }
+}
+</pre>
+</div>
+</div>
+
+<h2 id="protocol">避免协议与架构层面的泄露</h2>
+
+<h3>HTTPS 保护了什么，没保护什么</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="HTTPS 只加密节点之间的传输；URL 会被消费者、网关和实现的日志记录下来">
+  <rect class="bx-b" x="20" y="40" width="150" height="70" rx="10"/>
+  <text class="ttl on-b" x="95" y="66" text-anchor="middle">消费者应用</text>
+  <text class="sm" x="95" y="86" text-anchor="middle">手机/浏览器：不受控的环境</text>
+
+  <rect class="bx" x="305" y="40" width="150" height="70" rx="10"/>
+  <text class="ttl" x="380" y="66" text-anchor="middle">API 网关</text>
+  <text class="sm" x="380" y="86" text-anchor="middle">专注安全的 HTTP 代理</text>
+
+  <rect class="bx-a" x="590" y="40" width="150" height="70" rx="10"/>
+  <text class="ttl on-a" x="665" y="66" text-anchor="middle">API 实现</text>
+
+  <path class="ln-g" d="M170 75 H303" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="236" y="64" text-anchor="middle">HTTPS &#128274;</text>
+  <text class="sm" x="236" y="94" text-anchor="middle">中间可能还有未知的节点</text>
+  <path class="ln-g" d="M455 75 H588" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="522" y="64" text-anchor="middle">HTTPS &#128274;</text>
+
+  <rect class="bx-r" x="20" y="140" width="150" height="90" rx="8"/>
+  <text class="ttl on-r" x="34" y="160">消费者的日志</text>
+  <text class="mono sm" x="34" y="180">GET /cards/12345</text>
+  <text class="mono sm" x="34" y="196">GET /accounts?q=X</text>
+  <text class="mono sm" x="34" y="212">POST /applications</text>
+
+  <rect class="bx-r" x="305" y="140" width="150" height="90" rx="8"/>
+  <text class="ttl on-r" x="319" y="160">网关的日志</text>
+  <text class="mono sm" x="319" y="180">GET /cards/12345</text>
+  <text class="mono sm" x="319" y="196">GET /accounts?q=X</text>
+  <text class="mono sm" x="319" y="212">POST /applications</text>
+
+  <rect class="bx-r" x="590" y="140" width="150" height="90" rx="8"/>
+  <text class="ttl on-r" x="604" y="160">实现的日志</text>
+  <text class="mono sm" x="604" y="180">GET /cards/12345</text>
+  <text class="mono sm" x="604" y="196">GET /accounts?q=X</text>
+  <text class="mono sm" x="604" y="212">POST /applications</text>
+
+  <path class="ln-r" d="M95 110 V138" marker-end="url(#ar-r)"/>
+  <path class="ln-r" d="M380 110 V138" marker-end="url(#ar-r)"/>
+  <path class="ln-r" d="M665 110 V138" marker-end="url(#ar-r)"/>
+  <text class="sm" x="380" y="20" text-anchor="middle">HTTPS 只保护两点之间的「线」，不保护线两端的「点」。URL 到处被记录；请求体通常不会（但也可能）</text>
+</svg>
+<figcaption>图 12-5　路径和查询参数会出现在一路上所有的日志里</figcaption>
+</figure>
+
+<p>由此得出三条规则：</p>
+<ol>
+  <li><strong>URL 里永远不放敏感数据</strong>（路径参数和查询参数都不行）；</li>
+  <li>必要时<strong>加密</strong>数据，让任何中间节点都读不了；</li>
+  <li>必要时<strong>签名</strong>数据，让任何中间节点都改不了。</li>
+</ol>
+
+<h3>敏感的搜索条件：POST /resources/search</h3>
+
+<p>
+  合作方需要按姓名搜索户主。<code>GET /holders?name=Bob</code> 会让姓名进入所有日志。通行的解决办法是把搜索条件挪进请求体：
+</p>
+
+<div class="code" data-lang="http">
+<pre>
+POST /holders/search HTTP/1.1
+Content-Type: application/json
+
+{ "name": "Bob" }
+</pre>
+</div>
+
+<p>
+  为什么不是 <code>POST /holders</code>？它已经被「创建户主」占用了。<code>/search</code> 是一个动作资源（第 4 章说过它是合法的），
+  于是路径模式变成了「资源列表 + 可选的标识符<em>或动作资源</em>」。
+</p>
+
+<h3>敏感的资源标识符</h3>
+<p>
+  第 8 章建议用可互操作的标识符。但如果它本身是敏感的呢？所有系统都认识社会保障号，可它绝不能出现在 <code>GET /holders/{socialSecurityNumber}</code> 这样的 URL 里。
+  折中办法：路径里用我们内部的 <code>holderId</code>（至少在内部可互操作）；同时提供 <code>POST /holders/search</code> 让外部用社保号查出 <code>holderId</code>，之后的所有操作都用它。
+</p>
+
+<h3>加密与签名</h3>
+<p>安全专家可能认为 HTTPS 还不够，要求对请求或响应数据加密（只有授权方能读）或签名（确认来源、防止篡改，但数据仍可读）。作为设计者，要向他们问清三件事，并写进文档：</p>
+<ul>
+  <li>加密/签名的是全部数据，还是只有敏感的部分？</li>
+  <li>是否因消费者而异？</li>
+  <li>消费者如何获取或提供加解密、签名所需的材料？</li>
+</ul>
+
+<h2 id="scopes">用作用域限制消费者的访问</h2>
+
+<p>
+  表面已经最小化，但一个被授权使用这个 API 的应用仍然能调用它的<em>全部</em>操作。
+  按照<strong>最小权限原则</strong>，应该只给它需要的那部分。<strong>作用域（scope）</strong>就是用来划分这个「部分」的。
+  （它主要与 OAuth 和 OpenID Connect 相关，类似于其他安全框架里的角色或属性。）
+</p>
+
+<h3>作用域 vs 用户权限</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="三个应用调用转账操作：缺少作用域的被网关拦截，用户权限不足的被实现拒绝，两者都满足的才成功">
+  <g>
+    <rect class="bx-b" x="20" y="24" width="170" height="60" rx="10"/>
+    <text class="ttl on-b" x="105" y="48" text-anchor="middle">SpendAdvize（第三方）</text>
+    <text class="mono sm" x="105" y="68" text-anchor="middle">scopes: [account]</text>
+
+    <rect class="bx-b" x="20" y="108" width="170" height="76" rx="10"/>
+    <text class="ttl on-b" x="105" y="130" text-anchor="middle">手机银行</text>
+    <text class="mono sm" x="105" y="148" text-anchor="middle">[account, transfer]</text>
+    <text class="sm" x="105" y="168" text-anchor="middle">用户 Bob（户主）</text>
+
+    <rect class="bx-b" x="20" y="208" width="170" height="76" rx="10"/>
+    <text class="ttl on-b" x="105" y="230" text-anchor="middle">管理后台</text>
+    <text class="mono sm" x="105" y="248" text-anchor="middle">[account, transfer]</text>
+    <text class="sm" x="105" y="268" text-anchor="middle">用户 Alice（顾问）</text>
+  </g>
+
+  <text class="mono sm" x="250" y="16" text-anchor="middle">POST /transfers  amount: 100001</text>
+
+  <rect class="bx" x="300" y="24" width="150" height="260" rx="12"/>
+  <text class="ttl" x="375" y="48" text-anchor="middle">API 网关</text>
+  <text class="sm" x="375" y="68" text-anchor="middle">检查作用域</text>
+  <text class="sm" x="375" y="96" text-anchor="middle">POST /transfers</text>
+  <text class="sm" x="375" y="112" text-anchor="middle">需要 transfer</text>
+
+  <rect class="bx-a" x="560" y="24" width="180" height="260" rx="12"/>
+  <text class="ttl on-a" x="650" y="48" text-anchor="middle">API 实现</text>
+  <text class="sm" x="650" y="68" text-anchor="middle">检查用户权限和业务规则</text>
+  <text class="sm" x="650" y="96" text-anchor="middle">超过 10 万需要</text>
+  <text class="sm" x="650" y="112" text-anchor="middle">「不限额转账」权限</text>
+
+  <path class="ln-r" d="M190 54 H298" marker-end="url(#ar-r)"/>
+  <text class="on-r" x="330" y="150" font-weight="700">&#10007; 403</text>
+  <text class="sm on-r" x="375" y="168" text-anchor="middle">SpendAdvize 没有</text>
+  <text class="sm on-r" x="375" y="184" text-anchor="middle">transfer 作用域</text>
+
+  <path class="ln-b" d="M190 146 H298" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M450 146 H558" marker-end="url(#ar-b)"/>
+  <text class="on-r" x="604" y="150" font-weight="700">&#10007; 403</text>
+  <text class="sm on-r" x="650" y="168" text-anchor="middle">Bob 没有这个权限</text>
+
+  <path class="ln-g" d="M190 246 H298" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M450 246 H558" marker-end="url(#ar-g)"/>
+  <text class="on-g" x="604" y="250" font-weight="700">&#10003; 201</text>
+  <text class="sm on-g" x="650" y="268" text-anchor="middle">Alice 有权限，余额也够</text>
+</svg>
+<figcaption>图 12-6　作用域决定<strong>应用</strong>能不能调某个操作（通常由网关检查）；用户权限和业务规则决定这次调用<strong>能不能执行</strong>（由实现检查）</figcaption>
+</figure>
+
+<h3>为什么作用域的设计很重要</h3>
+<ul>
+  <li><strong>没有作用域</strong>：用户授权 SpendAdvize 使用银行 API 后，它就能调用包括「转账」在内的所有操作。</li>
+  <li><strong>粒度不当</strong>：如果只有一个涵盖所有写操作的 <code>write</code>，那么 SpendAdvize 为了把交易标记成「已核对」而申请 <code>write</code> 时，顺带也拿到了转账的权限。</li>
+  <li><strong>名字和描述看不懂</strong>：作用域不只是给提供者配置用的。消费方的开发者要挑选它，<strong>最终用户</strong>在第三方应用的授权页面上要读它（「MyBk App 想要：转账」）并决定是否同意。</li>
+</ul>
+
+<h3>六种设计思路</h3>
+
+<div class="tw">
+<table>
+  <tr><th>思路</th><th>例子</th><th>优点</th><th>缺点</th></tr>
+  <tr><td><strong>按操作</strong></td><td><code>transfer:list</code>、<code>transfer:create</code></td><td>最精确</td><td>数量多，配置繁琐，让用户眼花缭乱</td></tr>
+  <tr><td><strong>按资源/概念</strong></td><td><code>transfer:all</code> → <code>/transfers</code> 和 <code>/transfers/{id}</code> 上的所有操作</td><td>简单易懂</td><td>可能凑不成一个完整的用例（缺「列出付款方」）；可能混入敏感度不同的操作</td></tr>
+  <tr><td><strong>按用例</strong></td><td><code>money_transfer</code> → 完成转账所需的全部操作</td><td>对消费者最实用</td><td></td></tr>
+  <tr><td><strong>按读/写</strong></td><td><code>account:read</code>、<code>account:write</code></td><td>把会改数据的操作隔离出来</td><td>全局的 <code>read</code>/<code>write</code> 太粗</td></tr>
+  <tr><td><strong>按用户/消费者</strong></td><td><code>owner:all</code>、<code>owner:transfer:write</code></td><td>贴合「谁需要什么」</td><td>太宽的话看不出到底授予了什么</td></tr>
+  <tr><td><strong>行为调节</strong></td><td><code>transaction:sensitive_data</code></td><td>同一个操作，有它才返回商户名称和地址</td><td>由实现处理，改起来比改网关配置麻烦</td></tr>
+</table>
+</div>
+
+<p>
+  这些思路可以<strong>在同一个 API 里混用、组合</strong>，同一个操作也可以被多个作用域覆盖。组合后自然形成一个命名模式：
+</p>
+
+<div class="code" data-lang="text">
+<pre>
+{用户或消费者 | 通配}:{资源或用例 | 通配}:{动作 | 通配}
+
+owner:transfer:write        户主可用的、转账相关的写操作（不含「审批异常转账」）
+owner:account:read          户主可用的、账户相关的读操作
+third_party_server_application:account_application:all
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 怎么选</div>
+  <p>
+    细粒度的最精确，但会让配置变得复杂。往粗了合并时要警惕两件事：别把<strong>敏感度不同</strong>的操作并进同一个作用域；别造出庞大而含糊、第三方和用户都看不明白的作用域。
+    限制访问的作用域通常只是网关上的配置，调整起来容易；调节行为的作用域要改实现。上线后再改作用域会影响已有的消费者（第 15 章）。
+  </p>
+</div>
+
+<h3>在 OpenAPI 里描述作用域</h3>
+
+<p>先在 <code>components.securitySchemes</code> 里<strong>定义</strong>，再在每个操作的 <code>security</code> 里<strong>使用</strong>：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+components:
+  securitySchemes:
+    OperationBased:                  # 安全方案的名字，自己起
+      type: oauth2                   # 类型和流程请问安全专家；暂时不知道可以先这么写
+      flows:
+        implicit:
+          authorizationUrl: "https://auth.bankingcompany.com/authorize"   # 不知道就先填个假的
+          scopes:                    # 注意：是对象，不是列表
+            "beneficiary:create": Add a beneficiary       # 作用域名: 描述
+            "beneficiary:list": List beneficiaries
+            "transfer:create": Transfer money
+    ResourceOrUseCaseBased:          # 可以定义多个安全方案来给作用域分组
+      type: oauth2
+      flows:
+        implicit:
+          authorizationUrl: "https://auth.bankingcompany.com/authorize"
+          scopes:
+            "beneficiary:all": Create, list, read, modify, and delete beneficiaries
+            "transfer:all": All operations needed to perform and manage transfers
+
+paths:
+  /beneficiaries:
+    post:
+      summary: Add a beneficiary
+      security:                      # 满足列表中任意一项即可访问
+        - OperationBased:
+            - "beneficiary:create"
+        - ResourceOrUseCaseBased:
+            - "beneficiary:all"
+      responses:
+        "201":
+          description: Added
+</pre>
+</div>
+
+<p>名字里有冒号时要加引号，否则 YAML 会解析出错。</p>
+
+<h2 id="errors">安全地报错</h2>
+
+<h3>401、403 还是 404</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 310" role="img" aria-label="根据令牌是否有效、是否缺少作用域或权限、问题能否通过申请解决，决定返回 401、403 还是 404">
+  <rect class="bx" x="20" y="24" width="160" height="50" rx="10"/>
+  <text class="mono sm" x="100" y="46" text-anchor="middle">GET /accounts/12345</text>
+  <text class="mono sm" x="100" y="62" text-anchor="middle">Authorization: ABC</text>
+
+  <path class="ln" d="M180 49 H218" marker-end="url(#ar)"/>
+  <rect class="bx-p" x="220" y="24" width="200" height="50" rx="10"/>
+  <text x="320" y="46" text-anchor="middle">令牌缺失、过期或无效</text>
+  <text class="sm" x="320" y="62" text-anchor="middle">（不存在、有笔误）？</text>
+  <path class="ln-r" d="M420 49 H478" marker-end="url(#ar-r)"/>
+  <text class="sm" x="449" y="40" text-anchor="middle">是</text>
+  <rect class="bx-r" x="480" y="24" width="260" height="50" rx="10"/>
+  <text class="mono on-r" x="494" y="46" font-weight="700">401 Unauthorized</text>
+  <text class="sm" x="494" y="62">"Missing, invalid, or expired token"</text>
+
+  <path class="ln" d="M320 74 V104" marker-end="url(#ar)"/>
+  <text class="sm" x="332" y="94">否</text>
+  <rect class="bx-p" x="220" y="106" width="200" height="50" rx="10"/>
+  <text x="320" y="128" text-anchor="middle">消费者缺少作用域？</text>
+  <text class="sm" x="320" y="144" text-anchor="middle">（可以去申请）</text>
+  <path class="ln-r" d="M420 131 H478" marker-end="url(#ar-r)"/>
+  <text class="sm" x="449" y="122" text-anchor="middle">是</text>
+  <rect class="bx-r" x="480" y="106" width="260" height="50" rx="10"/>
+  <text class="mono on-r" x="494" y="128" font-weight="700">403 Forbidden</text>
+  <text class="sm" x="494" y="144">"Missing account:read or account:all scope"</text>
+
+  <path class="ln" d="M320 156 V186" marker-end="url(#ar)"/>
+  <text class="sm" x="332" y="176">否</text>
+  <rect class="bx-p" x="220" y="188" width="200" height="50" rx="10"/>
+  <text x="320" y="210" text-anchor="middle">用户无权访问这个资源？</text>
+  <path class="ln-r" d="M420 204 H478" marker-end="url(#ar-r)"/>
+  <rect class="bx-r" x="480" y="180" width="260" height="50" rx="10"/>
+  <text class="mono on-r" x="494" y="202" font-weight="700">403 Forbidden</text>
+  <text class="sm" x="494" y="218">顾问：可以申请权限 → 可以告知资源存在</text>
+  <path class="ln-r" d="M420 226 C450 226 450 262 478 262" marker-end="url(#ar-r)"/>
+  <rect class="bx-a" x="480" y="240" width="260" height="50" rx="10"/>
+  <text class="mono on-a" x="494" y="262" font-weight="700">404 Not Found</text>
+  <text class="sm" x="494" y="278">户主：无从申请 → 对他来说「不存在」</text>
+
+  <path class="ln-g" d="M320 238 V268" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="240" y="270" width="160" height="30" rx="8"/>
+  <text class="mono on-g" x="320" y="290" text-anchor="middle" font-weight="700">200 OK</text>
+</svg>
+<figcaption>图 12-7　<code>403</code> 意味着「资源存在，你缺点什么，去申请就能解决」；不想透露资源存在、或问题无法通过申请解决时，用 <code>404</code></figcaption>
+</figure>
+
+<h3>500 不能泄露实现细节</h3>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">&#10007; 泄露了数据库类型和服务器地址</div>
+    <div class="code" data-lang="http"><pre>
+HTTP/1.1 500 Internal Server Error
+Content-Type: text/plain
+
+Error [08001] Connection to server
+192.168.12.34 failed
+</pre></div>
+  </div>
+  <div class="new">
+    <div class="h">&#10003; 只给消费者有用的信息</div>
+    <div class="code" data-lang="http"><pre>
+HTTP/1.1 500 Internal Server Error
+Content-Type: application/problem+json
+
+{
+  "status": 500,
+  "type": "https://api.bank.com/unexpected-error",
+  "title": "An unexpected error occurred",
+  "detail": "An unexpected error occurred (reference 12345)",
+  "instance": "/unexpected-errors/12345"
+}
+</pre></div>
+  </div>
+</div>
+
+<p>
+  左边的 <code>08001</code> 是 PostgreSQL 的错误码，再加一个内网 IP —— 攻击者求之不得。
+  右边用了 Problem Details 的 <code>instance</code> 属性给出<strong>这一次</strong>错误的引用：它不必是一个真能访问的 URL，只要能在服务端日志里查到就行。
+  把引用号也写进 <code>detail</code>，方便用户报给客服。
+</p>
+
+<div class="tabs" data-title="兜底的异常处理：不泄露任何实现细节">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+import logging, uuid
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+app = FastAPI()
+log = logging.getLogger("api")
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    reference = uuid.uuid4().hex[:8]
+    # 细节只进服务端日志
+    log.error("Unexpected error %s on %s %s", reference, request.method, request.url.path,
+              exc_info=exc)
+    # 响应里只有通用信息 + 一个可以拿来查日志的引用号
+    return JSONResponse(
+        status_code=500,
+        media_type="application/problem+json",
+        content={
+            "status": 500,
+            "type": "https://api.bank.com/unexpected-error",
+            "title": "An unexpected error occurred",
+            "detail": f"An unexpected error occurred (reference {reference})",
+            "instance": f"/unexpected-errors/{reference}",
+        },
+    )
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+import { Hono } from "hono";
+
+const app = new Hono();
+
+app.onError((err, c) =&gt; {
+  const reference = crypto.randomUUID().slice(0, 8);
+  // 细节只进服务端日志
+  console.error(`Unexpected error ${reference} on ${c.req.method} ${c.req.path}`, err);
+  // 响应里只有通用信息 + 一个可以拿来查日志的引用号
+  return c.body(
+    JSON.stringify({
+      status: 500,
+      type: "https://api.bank.com/unexpected-error",
+      title: "An unexpected error occurred",
+      detail: `An unexpected error occurred (reference ${reference})`,
+      instance: `/unexpected-errors/${reference}`,
+    }),
+    500,
+    { "Content-Type": "application/problem+json" },
+  );
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+@RestControllerAdvice
+public class UnexpectedErrorHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(UnexpectedErrorHandler.class);
+
+    @ExceptionHandler(Exception.class)
+    public ProblemDetail handle(Exception exception, HttpServletRequest request) {
+        String reference = UUID.randomUUID().toString().substring(0, 8);
+        // 细节只进服务端日志
+        log.error("Unexpected error {} on {} {}", reference, request.getMethod(),
+                  request.getRequestURI(), exception);
+        // 响应里只有通用信息 + 一个可以拿来查日志的引用号
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+            HttpStatus.INTERNAL_SERVER_ERROR,
+            "An unexpected error occurred (reference " + reference + ")");
+        problem.setType(URI.create("https://api.bank.com/unexpected-error"));
+        problem.setTitle("An unexpected error occurred");
+        problem.setInstance(URI.create("/unexpected-errors/" + reference));
+        return problem;       // Spring 会用 application/problem+json 返回
+    }
+}
+</pre>
+</div>
+</div>
+
+<h3>在 OpenAPI 里给实现者写清楚</h3>
+
+<p>
+  把 HTTP 状态的原因短语（「Forbidden」）直接当作响应描述，是通往错误实现的捷径。
+  实现者常常搞不清 <code>401</code> 和 <code>403</code> 的界线（「无效令牌包不包括权限不对的令牌？」）。<strong>写出每个状态码出现的确切条件</strong>：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /accounts/{accountId}:
+    get:
+      responses:
+        "401":
+          description: |
+            The access token is missing, expired, or invalid (non-existing, typo).
+            Scope-related errors are handled with 403.
+        "403":
+          description: |
+            The consumer is missing a scope, or the identified user is a bank
+            advisor who doesn't have access to the account.
+        "404":
+          description: |
+            The account doesn't exist, or the identified user is an account
+            owner who doesn't have access to it.
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 文档里的描述 ≠ API 返回的错误信息</div>
+  <p>
+    OpenAPI 里的 <code>description</code> 是写给<strong>实现者</strong>看的，可以比实际返回给消费者的错误信息（「Missing permission to access account 12345」）详细得多。
+    别把前者原样返回给调用方。
+  </p>
+</div>
+
+<h3>用 JSON Schema 锁死错误数据</h3>
+
+<p>
+  很多 OpenAPI 文档对错误响应不定义 schema，或者所有错误共用一个宽松的 schema —— 实现想返回什么就返回什么，敏感信息就可能漏出来。
+  可以用 <code>const</code>（唯一允许的值）和 <code>pattern</code>（正则）把 <code>500</code> 的响应<strong>精确地</strong>规定下来：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+components:
+  schemas:
+    UnexpectedError:
+      type: object
+      required: [status, type, title, detail, instance]
+      additionalProperties: false            # 不允许出现其他属性
+      properties:
+        status:
+          const: 500
+        type:
+          const: "https://api.bank.com/unexpected-error"
+        title:
+          const: An unexpected error occurred
+        detail:
+          type: string
+          pattern: "^An unexpected error occurred \\(reference [0-9a-f]+\\)$"
+          examples:
+            - An unexpected error occurred (reference 12345)
+        instance:
+          type: string
+          pattern: "^/unexpected-errors/[0-9a-f]+$"
+</pre>
+</div>
+
+<p>然后在所有操作的 <code>500</code> 响应里引用 <code>#/components/schemas/UnexpectedError</code>。只要实现遵守这份契约，就没有泄露的空间。</p>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>任何 API 都要保护，包括不对外的私有 API：只有相关的操作和数据能被授权的消费者和用户访问。</li>
+  <li>设计对安全的贡献：最小化 API 表面、不暴露提供者视角、保证数据完整性、给实现者提供所需的全部信息。</li>
+  <li>向有资质的专家确认哪些数据和操作是敏感的、如何保护；把完整的 OpenAPI 文档交给他们审阅。</li>
+  <li>质疑每一个数据和操作的必要性；删除或替换敏感元素；拆分操作；把敏感操作放进专门的 API。</li>
+  <li>在 OpenAPI 的描述里写明消费者和用户各自能看什么、做什么；调整设计，只返回需要的数据。</li>
+  <li><code>GET</code> 和 <code>DELETE</code> 可以安全重试；用幂等键防止 <code>POST</code> 被重放；用条件请求（<code>If-Match: &lt;ETag&gt;</code>）防止更新覆盖别人的修改。</li>
+  <li>URL 里不放敏感数据：用 <code>POST /resources/search</code> 把敏感的搜索条件移到请求体，并借此用敏感但可互操作的数据换取不敏感的资源 ID。</li>
+  <li>与安全专家讨论加密和签名，据此调整设计并写进文档。</li>
+  <li>作用域要设计得让提供者、消费者和最终用户都容易做出正确的选择；可按操作、资源、用例、读写、用户或消费者来划分，也可以用来调节操作的行为。</li>
+  <li>在 OpenAPI 的 <code>components.securitySchemes</code> 里定义作用域，在每个操作的 <code>security</code> 里使用。</li>
+  <li>令牌问题返回 <code>401</code>；可通过申请解决的作用域或权限问题返回 <code>403</code>；无法解决的返回 <code>404</code>。</li>
+  <li>用描述和 JSON Schema 确保 <code>500</code> 的响应不泄露实现细节。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      健身 App 的用户资料包含 <code>id</code>、<code>phone</code>、<code>name</code>、<code>email</code>、<code>birthDate</code>、<code>fitnessLevel</code>；训练记录包含日期、类型、时长、卡路里和带时间戳的 GPS 坐标序列。产品方想让<em>任何用户都能读取任何人的</em>资料和训练。有安全问题吗？
+      <details class="ans"><summary>参考答案</summary>
+        有。电话、邮箱、生日是 PII；GPS 轨迹能暴露一个人的住址和日常作息，非常危险。
+        对策：为「公开分享」设计<strong>不同的资源和模型</strong>（如公开资料只有昵称和健身等级；公开训练去掉 GPS 轨迹或只保留总距离，日期可以模糊化）；
+        让用户自己选择分享什么；完整的数据只返回给本人，并在 OpenAPI 描述里写明；必要时用行为调节型作用域。
+      </details>
+    </li>
+    <li>
+      某公司的 API 用 <code>GET /identifiers?id=123-456-789&amp;country=BRA</code> 判断一个字符串是否符合某国某种证件号的格式。有安全问题吗？
+      <details class="ans"><summary>参考答案</summary>
+        被检查的字符串很可能是真实的证件号，它出现在 URL 里就会进入各处的日志。
+        改为 <code>POST /identifiers/search</code>（或 <code>POST /identifier-checks</code>），把 <code>id</code> 和 <code>country</code> 放进请求体。
+      </details>
+    </li>
+    <li>
+      医院里「病历」「治疗」「排班」三个应用共用一个医疗 API。<code>GET /patients/{patientId}/conditions</code> 的数据只能被病历和治疗应用上、正在治疗该患者的医生访问。这能用作用域解决，还是要靠实现检查？
+      <details class="ans"><summary>参考答案</summary>
+        两者都要。<strong>作用域</strong>解决「哪些应用能调」：定义如 <code>patient:condition:read</code>，只授予病历和治疗应用，不给排班应用。
+        <strong>实现检查</strong>解决「哪个用户能看哪个患者」：根据令牌里的医生身份，核对他是否正在治疗 <code>patientId</code> 对应的患者（不是则返回 <code>403</code> 或 <code>404</code>）。并把这条规则写进操作的描述。
+      </details>
+    </li>
+    <li>
+      图书馆 API 的作用域：<code>/books</code> 上的 <code>GET</code>、<code>POST</code> 都要 <code>books</code>；<code>/books/{bookId}</code> 上的 <code>GET</code>、<code>PUT</code>、<code>DELETE</code> 都要 <code>book</code>；<code>members</code>/<code>member</code> 同理；借书要 <code>borrowed books</code>。有什么问题？
+      <details class="ans"><summary>参考答案</summary>
+        读和写没有分开：一个只需要搜索图书的应用（比如公开的馆藏查询）拿到 <code>books</code> 就也能新增图书，拿到 <code>book</code> 就也能删书。
+        按「集合/单个」划分没有业务意义，也让人难以理解；<code>borrowed books</code> 里有空格，命名也不一致。
+        改进：<code>book:read</code>（搜索+读取）、<code>book:write</code>（增改删）、<code>member:read</code>、<code>member:write</code>、<code>borrowing:create</code>，或按用户再细分（<code>librarian:…</code>、<code>member:…</code>）。
+      </details>
+    </li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

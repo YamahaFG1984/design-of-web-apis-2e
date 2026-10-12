@@ -1,0 +1,714 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 10 章 · 好用、可互操作的操作流 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="10">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 10 章</span>
+<h1>好用、可互操作的操作流</h1>
+<p class="lede">
+  想象用购物 API 买 10 本书：先搜商品，再列促销，自己把两份数据合并才能算出真实价格；然后调用 10 次「加入购物车」；最后结账失败 —— 库存不够。
+  每个操作单独看都没毛病，<strong>串起来</strong>却是一场折磨。这一章把视角从单个操作拉高到一连串调用。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解什么是操作流，以及好的操作流有哪些特征</li>
+    <li>会发现流程中的三类问题：重复调用、要消费者加工数据、可避免的错误</li>
+    <li>会用四种手段优化流程：增强操作、新增专用操作、合并操作、补充数据</li>
+    <li>避免让 API 的流程绑死消费者的界面流程</li>
+    <li>设计灵活的「保存数据」流程：既能分步保存，也能一步到位</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="what">什么是好的操作流</h2>
+
+<p>
+  <strong>操作流（operation flow）</strong>是消费者为了完成一个用例而进行的一连串 API 调用。它既包括第 2 章识别能力时描述的那些用例，
+  也包括消费者利用 API 的通用性自己发明的新用例。
+</p>
+
+<p>以租车为例。最初的流程有六步，每一步单独看都好用，但整体可以大幅改进：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="租车流程从六步优化为三步，再优化为更灵活、更有帮助的流程">
+  <text class="ttl" x="20" y="22">最初：6 步，顺序固定</text>
+  <g>
+    <rect class="bx" x="20" y="34" width="170" height="28" rx="6"/><text x="32" y="53">① 创建租车申请</text>
+    <rect class="bx" x="20" y="68" width="170" height="28" rx="6"/><text x="32" y="87">② 搜索门店</text>
+    <rect class="bx" x="20" y="102" width="170" height="28" rx="6"/><text x="32" y="121">③ 把门店加到申请</text>
+    <rect class="bx" x="20" y="136" width="170" height="28" rx="6"/><text x="32" y="155">④ 搜索门店里的车</text>
+    <rect class="bx" x="20" y="170" width="170" height="28" rx="6"/><text x="32" y="189">⑤ 把车加到申请</text>
+    <rect class="bx-r" x="20" y="204" width="170" height="28" rx="6"/><text x="32" y="223">⑥ 确认申请</text>
+    <text class="sm on-r" x="105" y="250" text-anchor="middle">&#10007; 失败：超过最长租期</text>
+  </g>
+
+  <path class="ln-a" d="M192 132 H222" marker-end="url(#ar-a)"/>
+
+  <text class="ttl" x="226" y="22">简洁</text>
+  <g>
+    <rect class="bx-d" x="226" y="68" width="150" height="28" rx="6"/><text class="lbl" x="238" y="87">搜索门店（可选）</text>
+    <rect class="bx-d" x="226" y="136" width="150" height="28" rx="6"/><text class="lbl" x="238" y="155">搜索门店里的车（可选）</text>
+    <rect class="bx-g" x="226" y="204" width="150" height="28" rx="6"/><text class="on-g" x="238" y="223">租车</text>
+  </g>
+  <text class="sm" x="301" y="250" text-anchor="middle">去掉不必要的步骤</text>
+  <text class="sm" x="301" y="266" text-anchor="middle">已知门店和车可直接租</text>
+
+  <path class="ln-a" d="M378 132 H408" marker-end="url(#ar-a)"/>
+
+  <text class="ttl" x="412" y="22">灵活</text>
+  <g>
+    <rect class="bx-d" x="412" y="102" width="150" height="28" rx="6"/><text class="lbl" x="424" y="121">跨门店搜索车（可选）</text>
+    <rect class="bx-g" x="412" y="204" width="150" height="28" rx="6"/><text class="on-g" x="424" y="223">租车</text>
+  </g>
+  <text class="sm" x="487" y="250" text-anchor="middle">不强迫「先选店再选车」</text>
+
+  <path class="ln-a" d="M564 132 H594" marker-end="url(#ar-a)"/>
+
+  <text class="ttl" x="598" y="22">贴合需求、有帮助</text>
+  <g>
+    <rect class="bx-d" x="598" y="88" width="150" height="56" rx="6"/>
+    <text class="lbl" x="610" y="108">搜索<tspan font-weight="700">可租</tspan>的车</text>
+    <text class="sm" x="610" y="126">筛选：某日期段内可租</text>
+    <rect class="bx-g" x="598" y="204" width="150" height="28" rx="6"/><text class="on-g" x="610" y="223">租车</text>
+  </g>
+  <text class="sm" x="673" y="250" text-anchor="middle">专门针对租车的搜索</text>
+  <text class="sm" x="673" y="266" text-anchor="middle">从源头避免了那个错误</text>
+
+  <text class="sm" x="380" y="310" text-anchor="middle">最右边的做法比「在搜索结果里返回最长租期」更好：后者能提示错误，但仍要消费者自己拿日期去算</text>
+</svg>
+<figcaption>图 10-1　同一个用例的四个版本</figcaption>
+</figure>
+
+<p>好的操作流：</p>
+<ul>
+  <li><strong>建立在好用的操作和数据之上。</strong>搜索返回的车辆 ID 就是读取和租车时要用的那个 ID；租车失败时给出有用的反馈。</li>
+  <li><strong>被当作一个整体来设计。</strong>零件都好，拼起来不一定好。</li>
+  <li><strong>简洁。</strong>步骤尽量少。</li>
+  <li><strong>灵活。</strong>不约束消费者的调用顺序；最好能从中间某一步切入 —— 这也提高了互操作性。</li>
+  <li><strong>在流程的语境里满足需求。</strong>如果 API 同时处理租车和卖车，租车流程里用「搜索可租的车」比通用的「搜索车」更合适。</li>
+  <li><strong>各步骤互相帮助。</strong>前一步的输出能直接当后一步的输入，尽量减少加工和出错。</li>
+  <li><strong>一致、标准。</strong>相似的用例用相似的流程。比如租车和往门店加车都要上传文件（驾照、行驶证），那就用同一套上传模式。获取 API 凭证的流程则由安全框架标准化（第 12 章）。</li>
+</ul>
+
+<div class="box warn">
+  <div class="t">&#9888; 流程直接影响最终用户</div>
+  <p>API 流程里的每一步、每一个错误，最终都会变成用户在界面上要点的按钮、要看的报错。</p>
+</div>
+
+<h3>什么时候优化、怎么优化</h3>
+
+<p>
+  流程优化排在数据（第 8 章）和操作（第 9 章）之后，因为要先有打磨好的零件。也不要在识别能力时（第 2 章）就做，那会拖慢讨论，甚至偏离需求。
+</p>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">找问题：问四个问题</div>
+    <ul style="padding:10px 14px 10px 32px;margin:0;font-size:14.5px">
+      <li>这一步真的需要吗？</li>
+      <li>这个错误能预防吗？</li>
+      <li>能不能不让消费者加工输出来得到下一步的输入？</li>
+      <li>流程中保存数据的方式合理吗？</li>
+    </ul>
+  </div>
+  <div class="new">
+    <div class="h">做优化：四种手段</div>
+    <ul style="padding:10px 14px 10px 32px;margin:0;font-size:14.5px">
+      <li>给操作增加与用例相关的<strong>功能</strong>（如筛选项）</li>
+      <li>新增针对用例的<strong>专用操作</strong></li>
+      <li><strong>合并</strong>操作</li>
+      <li>补充针对用例的<strong>数据</strong>（提示性的或加工好的）</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="transfer">案例一：让转账流程简洁、少出错、灵活</h2>
+
+<h3>起点</h3>
+
+<p>用银行 API 从一个账户向另一个账户转账：</p>
+
+<div class="tw">
+<table>
+  <tr><th>用例步骤</th><th>操作</th><th>输出</th><th>问题</th></tr>
+  <tr><td>列出自己的付款账户</td><td>列出账户</td><td>账户列表</td><td>消费者得自己排除 <code>BLOCKED</code> 的账户</td></tr>
+  <tr><td>列出已登记的收款人</td><td>列出收款人</td><td>收款人列表</td><td></td></tr>
+  <tr><td>列出自己的收款账户</td><td>列出账户</td><td>账户列表</td><td>和第一步是<strong>同一次调用</strong>；又得排除 <code>BLOCKED</code>；还得和收款人合并</td></tr>
+  <tr><td>转账</td><td>转账</td><td></td><td>错误：付款/收款账户无效；金额不在允许范围内</td></tr>
+</table>
+</div>
+
+<p>转账可能失败的原因很多，而消费者几乎没法提前知道：</p>
+<ul>
+  <li>付款账户不属于用户，或账户状态不允许转账；</li>
+  <li>某些付款/收款组合不被允许（比如从储蓄账户转给别人）；</li>
+  <li>金额不能超过付款账户余额；储蓄账户有最低转入额和余额上限；</li>
+  <li>转给他人时，有一个取决于用户等级和近 30 天累计转账额的上限。</li>
+</ul>
+
+<p>只有四次调用，看起来很短。但开发者要写一堆容易出错的代码，最终用户则只能靠<strong>试错</strong> —— 再好的错误提示也挽救不了这种体验。</p>
+
+<h3>逐步优化</h3>
+
+<ol>
+  <li>
+    <strong>同样的读取只调一次。</strong>「列出付款账户」和「列出收款账户」调的是同一个操作、拿的是同一份数据。合并为一步。
+    （这不改变 API 设计，只改变我们描述用例的方式。）
+  </li>
+  <li>
+    <strong>给操作加筛选？小心。</strong>加一个 <code>GET /accounts?status=not:BLOCKED</code> 能省掉消费者的过滤 —— 但「被冻结的账户不能转账」是银行的内部规则，不该让消费者知道。
+    换成 <code>GET /accounts?transfer=enabled</code> 呢？意图清楚了，可「能否用于转账」已经超出了「账户」这个资源的范围，一个重要的能力被藏进了通用操作里（第 9 章）。
+  </li>
+  <li>
+    <strong>新增专用操作。</strong><code>GET /transfer-sources</code>：「列出转账付款方」，只返回可以作为付款方的账户。
+    它专属于转账用例，开发者也很容易把它和转账请求里的 <code>source</code> 属性联系起来。
+  </li>
+  <li>
+    <strong>合并成专用操作。</strong>收款方 = 自己的可用账户 + 已登记的收款人。「转账收款方」这个聚合概念在业务上是成立的。
+    但不是所有付款/收款组合都合法，所以操作应该是「列出<em>某个付款方</em>可用的收款方」：<code>GET /transfer-sources/{accountId}/destinations</code>。
+    （路径用了可互操作的 <code>accountId</code>；这并不意味着 <code>GET /transfer-sources/{accountId}</code> 也要存在 —— 没有需求就不加。）
+  </li>
+  <li>
+    <strong>补充加工好的数据。</strong>金额范围取决于付款方余额、收款方类型、用户等级、近期累计额……与其把这些原始数据散落在各处让消费者去算，
+    不如让实现算好，把<strong>现成的金额范围</strong>直接放在每个「付款方—收款方」组合上。
+  </li>
+</ol>
+
+<h3>别绑死消费者的界面</h3>
+
+<p>优化到这一步，数据不用加工了，错误也几乎不会发生了。但还有一个问题：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="三种转账流程设计对消费者界面流程的约束程度">
+  <rect class="bx" x="20" y="20" width="226" height="250" rx="12"/>
+  <text class="ttl" x="133" y="44" text-anchor="middle">A：不用加工、少出错</text>
+  <text class="sm on-r" x="133" y="62" text-anchor="middle">但不灵活</text>
+  <rect class="bx-b" x="36" y="76" width="194" height="26" rx="5"/><text class="sm" x="44" y="94">列出付款方</text>
+  <text class="sm" x="133" y="118" text-anchor="middle">&#8595; 用户选付款方</text>
+  <rect class="bx-b" x="36" y="128" width="194" height="26" rx="5"/><text class="sm" x="44" y="146">列出该付款方的收款方</text>
+  <text class="sm" x="133" y="170" text-anchor="middle">&#8595; 用户选收款方、输金额</text>
+  <rect class="bx-g" x="36" y="180" width="194" height="26" rx="5"/><text class="sm" x="44" y="198">转账</text>
+  <text class="sm" x="133" y="232" text-anchor="middle">界面只能「先付款方，</text>
+  <text class="sm" x="133" y="250" text-anchor="middle">后收款方，再金额」</text>
+
+  <rect class="bx-r" x="267" y="20" width="226" height="250" rx="12"/>
+  <text class="ttl on-r" x="380" y="44" text-anchor="middle">B：加更多操作</text>
+  <text class="sm on-r" x="380" y="62" text-anchor="middle">灵活性有限，还容易用错</text>
+  <rect class="bx" x="283" y="76" width="194" height="26" rx="5"/><text class="sm" x="291" y="94">＋ 列出收款方</text>
+  <rect class="bx" x="283" y="108" width="194" height="26" rx="5"/><text class="sm" x="291" y="126">＋ 列出该收款方的付款方</text>
+  <text class="sm" x="380" y="164" text-anchor="middle">开发者可能图省事分别调</text>
+  <text class="sm" x="380" y="182" text-anchor="middle">「列出付款方」「列出收款方」</text>
+  <text class="sm" x="380" y="200" text-anchor="middle">→ 选出一个不合法的组合</text>
+  <text class="sm" x="380" y="232" text-anchor="middle">而且仍然得先选一方</text>
+  <text class="sm" x="380" y="250" text-anchor="middle">才能输金额</text>
+
+  <rect class="bx-g" x="514" y="20" width="226" height="250" rx="12"/>
+  <text class="ttl on-g" x="627" y="44" text-anchor="middle">C：一个聚合操作</text>
+  <text class="sm on-g" x="627" y="62" text-anchor="middle">完全灵活</text>
+  <rect class="bx-b" x="530" y="76" width="194" height="42" rx="5"/>
+  <text class="sm" x="538" y="94">列出付款方及其收款方</text>
+  <text class="sm" x="538" y="110">（含每个组合的金额范围）</text>
+  <text class="sm" x="627" y="146" text-anchor="middle">&#8595; 付款方、收款方、金额</text>
+  <text class="sm" x="627" y="164" text-anchor="middle">一步选完或分三步，顺序随意</text>
+  <rect class="bx-g" x="530" y="180" width="194" height="26" rx="5"/><text class="sm" x="538" y="198">转账</text>
+  <text class="sm" x="627" y="232" text-anchor="middle">开发者本来要自己循环调用</text>
+  <text class="sm" x="627" y="250" text-anchor="middle">才能拿到的数据，我们替他做了</text>
+</svg>
+<figcaption>图 10-2　API 流程越死板，消费者能做出的界面就越少。改个界面流程就得改 API，是第 2 章警告过的事</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 聚合要有度</div>
+  <p>
+    任何优化 —— 尤其是合并操作 —— 都不能以牺牲数据和操作的清晰度为代价。
+    「一次返回所有账户、所有转账和全部用户资料」从转账或银行业务的角度看都没有意义，既难懂又难用。
+    聚合必须在<strong>业务上讲得通</strong>，而不是为某个消费者量身定做。
+  </p>
+</div>
+
+<h3>消费者代码：优化前后</h3>
+
+<p>优化的效果在消费者的代码里最直观。上半段是面对原始流程的客户端，下半段是面对方案 C 的客户端：</p>
+
+<div class="tabs" data-title="准备转账界面所需的数据">
+<div class="code" data-lang="python">
+<pre>
+import httpx
+api = httpx.Client(base_url="https://api.bank.com")
+
+# ✗ 优化前：2 次调用 + 一堆要靠消费者实现的银行业务规则
+def transfer_options_before() -&gt; list[dict]:
+    accounts = [a for a in api.get("/accounts").json()["data"]
+                if a["status"] != "BLOCKED"]                      # 内部规则 ①
+    beneficiaries = api.get("/beneficiaries").json()["data"]
+
+    options = []
+    for source in accounts:
+        destinations = [a for a in accounts if a["id"] != source["id"]]
+        if source["type"] != "savings":                           # 内部规则 ②
+            destinations += beneficiaries
+        for d in destinations:
+            options.append({
+                "source": source["id"], "destination": d["id"],
+                "max": source["balance"]["value"],                # 不完整：储蓄上限？30 天限额？
+            })                                                    # 这些数据消费者根本拿不到
+    return options
+
+# ✓ 优化后：1 次调用，数据拿来即用，规则全在服务端
+def transfer_options_after() -&gt; list[dict]:
+    return api.get("/transfer-sources").json()["data"]
+    # [{ "id": "FR76…", "name": "Checking",
+    #    "destinations": [
+    #       { "id": "FR12…", "name": "Savings", "type": "account",
+    #         "amount": { "min": 10, "max": 1800, "currency": "EUR" } },
+    #       { "id": "DE89…", "name": "Alice", "type": "beneficiary",
+    #         "amount": { "min": 0.01, "max": 1000, "currency": "EUR" } } ] }]
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const base = "https://api.bank.com";
+const get = async (path: string) =&gt; (await (await fetch(base + path)).json()).data;
+
+type AmountRange = { min: number; max: number; currency: string };
+type Destination = { id: string; name: string; type: "account" | "beneficiary"; amount: AmountRange };
+type TransferSource = { id: string; name: string; destinations: Destination[] };
+
+// ✗ 优化前：2 次调用 + 一堆要靠消费者实现的银行业务规则
+async function transferOptionsBefore() {
+  const accounts = (await get("/accounts")).filter((a: any) =&gt; a.status !== "BLOCKED"); // 内部规则 ①
+  const beneficiaries = await get("/beneficiaries");
+
+  return accounts.flatMap((source: any) =&gt; {
+    let destinations = accounts.filter((a: any) =&gt; a.id !== source.id);
+    if (source.type !== "savings") destinations = [...destinations, ...beneficiaries];   // 内部规则 ②
+    return destinations.map((d: any) =&gt; ({
+      source: source.id,
+      destination: d.id,
+      max: source.balance.value,       // 不完整：储蓄上限？30 天限额？这些数据消费者根本拿不到
+    }));
+  });
+}
+
+// ✓ 优化后：1 次调用，数据拿来即用，规则全在服务端
+async function transferOptionsAfter(): Promise&lt;TransferSource[]&gt; {
+  return get("/transfer-sources");
+}
+
+// 界面想怎么组织都行：先选收款方也可以
+const sources = await transferOptionsAfter();
+const whoCanPayAlice = sources.filter((s) =&gt; s.destinations.some((d) =&gt; d.name === "Alice"));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+RestClient api = RestClient.create("https://api.bank.com");
+
+record AmountRange(BigDecimal min, BigDecimal max, String currency) {}
+record Destination(String id, String name, String type, AmountRange amount) {}
+record TransferSource(String id, String name, List&lt;Destination&gt; destinations) {}
+record TransferSources(List&lt;TransferSource&gt; data) {}
+
+// ✗ 优化前：2 次调用 + 一堆要靠消费者实现的银行业务规则
+List&lt;Option&gt; transferOptionsBefore() {
+    List&lt;Account&gt; accounts = api.get().uri("/accounts").retrieve().body(Accounts.class).data()
+        .stream().filter(a -&gt; !a.status().equals("BLOCKED")).toList();          // 内部规则 ①
+    List&lt;Beneficiary&gt; beneficiaries =
+        api.get().uri("/beneficiaries").retrieve().body(Beneficiaries.class).data();
+
+    List&lt;Option&gt; options = new ArrayList&lt;&gt;();
+    for (Account source : accounts) {
+        List&lt;String&gt; destinationIds = new ArrayList&lt;&gt;();
+        accounts.stream().filter(a -&gt; !a.id().equals(source.id())).forEach(a -&gt; destinationIds.add(a.id()));
+        if (!source.type().equals("savings")) {                                  // 内部规则 ②
+            beneficiaries.forEach(b -&gt; destinationIds.add(b.id()));
+        }
+        for (String destinationId : destinationIds) {
+            // 不完整：储蓄上限？30 天限额？这些数据消费者根本拿不到
+            options.add(new Option(source.id(), destinationId, source.balance().value()));
+        }
+    }
+    return options;
+}
+
+// ✓ 优化后：1 次调用，数据拿来即用，规则全在服务端
+List&lt;TransferSource&gt; transferOptionsAfter() {
+    return api.get().uri("/transfer-sources").retrieve().body(TransferSources.class).data();
+}
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 错误没有完全消失</div>
+  <p>有了这些数据引导，转账几乎不会失败。但意外的服务端错误、或者流程进行中余额恰好变化导致的错误，仍然可能发生 —— 第 9 章的错误处理依然必要。</p>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 专用操作的另一个用途</div>
+  <p>当搜索的筛选项需要一组预定义的值时（比如按分类筛选交易），可以提供一个专用操作来获取这些值。还记得第 5 章「消费者没法凭空给出 <code>category</code>」吗？</p>
+</div>
+
+<h2 id="saving">案例二：灵活的数据保存流程</h2>
+
+<h3>起点：开户</h3>
+
+<p>用银行 API 开一个账户的原始流程：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="开户的原始流程是一条必须按固定顺序执行的链条">
+  <g>
+    <rect class="bx" x="16" y="70" width="100" height="56" rx="8"/><text x="66" y="94" text-anchor="middle">发起申请</text><text class="sm" x="66" y="112" text-anchor="middle">→ 申请 ID</text>
+    <rect class="bx-r" x="138" y="70" width="100" height="56" rx="8"/><text x="188" y="94" text-anchor="middle">添加服务</text><text class="sm" x="188" y="112" text-anchor="middle">保存</text>
+    <rect class="bx-r" x="260" y="70" width="100" height="56" rx="8"/><text x="310" y="94" text-anchor="middle">添加网点</text><text class="sm" x="310" y="112" text-anchor="middle">保存</text>
+    <rect class="bx-r" x="382" y="70" width="100" height="56" rx="8"/><text x="432" y="94" text-anchor="middle">添加银行卡</text><text class="sm" x="432" y="112" text-anchor="middle">保存</text>
+    <rect class="bx-r" x="504" y="70" width="110" height="56" rx="8"/><text x="559" y="94" text-anchor="middle">添加户主信息</text><text class="sm" x="559" y="112" text-anchor="middle">保存（含邮箱）</text>
+    <rect class="bx" x="636" y="70" width="108" height="56" rx="8"/><text x="690" y="94" text-anchor="middle">确认申请</text><text class="sm" x="690" y="112" text-anchor="middle">→ 开户</text>
+  </g>
+  <path class="ln" d="M116 98 H136" marker-end="url(#ar)"/>
+  <path class="ln-r" d="M238 98 H258" marker-end="url(#ar-r)"/>
+  <path class="ln-r" d="M360 98 H380" marker-end="url(#ar-r)"/>
+  <path class="ln-r" d="M482 98 H502" marker-end="url(#ar-r)"/>
+  <path class="ln" d="M614 98 H634" marker-end="url(#ar)"/>
+  <text class="sm on-r" x="375" y="52" text-anchor="middle">必须严格按这个顺序调用，否则报错</text>
+  <text class="sm" x="375" y="158" text-anchor="middle">问题 ①：界面流程被锁死 —— 想调整步骤顺序来提高开户转化率？得先改 API</text>
+  <text class="sm" x="375" y="178" text-anchor="middle">问题 ②：最关键的信息（能联系到申请人的邮箱）最后才收集。</text>
+  <text class="sm" x="375" y="196" text-anchor="middle">用户中途离开，我们就无法联系他把申请做完</text>
+</svg>
+<figcaption>图 10-3　每个保存步骤都卡住了下一个</figcaption>
+</figure>
+
+<h3>逐步优化</h3>
+
+<ol>
+  <li>
+    <strong>允许部分保存。</strong>先收集<strong>最少的关键数据</strong>，其余的让消费者想什么时候给就什么时候给、顺序任意。
+    邮箱对整个流程至关重要，所以在<em>发起申请</em>时就要求提供；其他一切都通过「更新」操作逐步补齐。
+    但有一条底线：<strong>不接受无效数据</strong>。缺数据可以，错数据不行。
+  </li>
+  <li>
+    <strong>谨慎地合并保存操作。</strong>服务、网点、银行卡、户主信息都是「开户申请」这个概念的组成部分，
+    把各自的「添加/更新」合并进「更新开户申请」是说得通的。
+    但「列出服务」「列出网点」「列出银行卡种类」不该合并 —— 它们是互不相干的概念，合在一起筛选也没法做。好在分开也不影响流程的灵活性。
+  </li>
+  <li>
+    <strong>让校验更顺滑，并把它和「完成」分开。</strong>部分保存有个副作用：消费者怎么知道还缺什么？每次更新后都调一次「校验」太麻烦。
+    更好的办法：<strong>在申请数据里直接带上状态信息</strong>。发起和更新操作仍然返回 <code>2XX</code>（申请不完整在这里不算错误），同时返回：
+    <ul>
+      <li><code>status</code>：<code>INCOMPLETE</code>（还缺必填数据）或 <code>COMPLETE</code>（齐了）；</li>
+      <li><code>messages</code>：格式沿用第 9 章的错误列表，说明具体缺什么。</li>
+    </ul>
+    状态变成 <code>COMPLETE</code> 后，消费者可以把全部数据展示给用户做最后确认，然后才调用「确认申请」。
+  </li>
+  <li>
+    <strong>同时支持一步到位。</strong>不是所有消费者都有需要一步步填表的最终用户 —— 比如银行的合作方用批处理程序开户。
+    两种做法：加一个查询参数 <code>POST /account-applications?completion=true</code>（数据不全就报错）；
+    或者更明确地拆成两个资源：<code>/account-applications</code>（一次给全）和 <code>/partial-account-applications</code>（分步）。
+  </li>
+  <li>
+    <strong>把消费者引导到最终的资源。</strong>分步申请确认之后，就变成了一个正式的开户申请。可以返回 <code>201 Created</code> 加 <code>Location</code> 和数据；
+    也可以用我们还没用过的 <strong><code>3XX</code> 重定向</strong>：返回 <code>303 See Other</code> 和 <code>Location</code> 头，不带响应体，由消费者决定要不要跟过去取数据。
+  </li>
+</ol>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="优化后的开户流程：发起时只要邮箱，之后任意顺序更新，状态从 INCOMPLETE 变为 COMPLETE，确认后重定向到正式申请">
+  <rect class="bx-b" x="20" y="30" width="170" height="74" rx="10"/>
+  <text class="mono sm on-b" x="34" y="52" font-weight="700">POST</text>
+  <text class="mono sm" x="34" y="68">/partial-account-</text>
+  <text class="mono sm" x="34" y="82">applications</text>
+  <text class="sm" x="34" y="98">只要求：邮箱</text>
+
+  <path class="ln-b" d="M190 67 H238" marker-end="url(#ar-b)"/>
+
+  <rect class="bx-a" x="240" y="24" width="210" height="86" rx="12"/>
+  <text class="ttl on-a" x="345" y="48" text-anchor="middle">status: INCOMPLETE</text>
+  <text class="sm" x="345" y="68" text-anchor="middle">messages: 缺 services、</text>
+  <text class="sm" x="345" y="84" text-anchor="middle">branch、card、holder.address…</text>
+  <text class="sm on-g" x="345" y="102" text-anchor="middle">201 —— 不完整不是错误</text>
+
+  <path class="ln-a" d="M300 110 C260 170 430 170 390 112" marker-end="url(#ar-a)"/>
+  <rect class="bx" x="236" y="150" width="218" height="62" rx="10"/>
+  <text class="mono sm on-b" x="250" y="172" font-weight="700">PATCH</text><text class="mono sm" x="296" y="172">…/{id}</text>
+  <text class="sm" x="250" y="190">任意数据、任意顺序、任意次数</text>
+  <text class="sm on-r" x="250" y="204">无效数据 → 400</text>
+
+  <path class="ln-g" d="M450 67 H508" marker-end="url(#ar-g)"/>
+  <text class="sm" x="480" y="56" text-anchor="middle">齐了</text>
+
+  <rect class="bx-g" x="510" y="24" width="230" height="86" rx="12"/>
+  <text class="ttl on-g" x="625" y="48" text-anchor="middle">status: COMPLETE</text>
+  <text class="sm" x="625" y="68" text-anchor="middle">messages: []</text>
+  <text class="sm" x="625" y="88" text-anchor="middle">消费者把全部数据展示给用户</text>
+  <text class="sm" x="625" y="104" text-anchor="middle">做最后确认</text>
+
+  <path class="ln-g" d="M625 110 V148" marker-end="url(#ar-g)"/>
+  <rect class="bx-b" x="510" y="150" width="230" height="62" rx="10"/>
+  <text class="mono sm on-b" x="524" y="172" font-weight="700">POST</text><text class="mono sm" x="562" y="172">…/{id}/validations</text>
+  <text class="mono sm on-g" x="524" y="192">303 See Other　Location:</text>
+  <text class="mono sm" x="524" y="206">/account-applications/{id}</text>
+
+  <path class="ln-g" d="M625 212 V246" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="510" y="248" width="230" height="40" rx="10"/>
+  <text class="mono sm" x="625" y="273" text-anchor="middle">GET /account-applications/{id}</text>
+
+  <rect class="bx-d" x="20" y="248" width="434" height="40" rx="10"/>
+  <text class="sm" x="34" y="266">一步到位的消费者（如批处理）：</text>
+  <text class="mono sm" x="34" y="281">POST /account-applications　—— 数据不全或无效直接报错</text>
+  <path class="ln-d" d="M454 268 H508" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 10-4　灵活的保存流程：分步和一步到位都支持，消费者随时知道还缺什么</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 先确认「任意顺序」可行</div>
+  <p>业务规则或实现上的限制有时会让某些数据必须先于另一些保存。设计前和领域专家、实现团队确认（第 14 章）。</p>
+</div>
+
+<h3>实现分步保存</h3>
+
+<p>关键在于区分两类问题：<strong>无效</strong>的数据立刻拒绝，<strong>缺少</strong>的数据只在元数据里提示。</p>
+
+<div class="tabs" data-title="部分保存 + 状态元数据 + 303 重定向">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+from fastapi import FastAPI, HTTPException, Response
+from pydantic import BaseModel, EmailStr
+
+app = FastAPI()
+REQUIRED = ["services", "branchId", "cardType", "holderName", "holderAddress"]
+CARD_TYPES = {"debit", "credit"}
+
+class ApplicationInit(BaseModel):
+    email: EmailStr                       # 发起时唯一必填：能联系到申请人
+
+class ApplicationPatch(BaseModel):        # 其余全部可选，任意顺序提供
+    services: list[str] | None = None
+    branchId: str | None = None
+    cardType: str | None = None
+    holderName: str | None = None
+    holderAddress: str | None = None
+
+def with_metadata(application: dict) -&gt; dict:
+    """数据 + 元数据：每次保存后都告诉消费者还缺什么"""
+    missing = [name for name in REQUIRED if not application.get(name)]
+    return {
+        "data": application,
+        "metadata": {
+            "status": "INCOMPLETE" if missing else "COMPLETE",
+            "messages": [{"type": "MISSING_PROPERTY",
+                          "detail": f"{name} is missing",
+                          "source": {"location": "body", "pointer": f"#/{name}"}}
+                         for name in missing],
+        },
+    }
+
+@app.post("/partial-account-applications", status_code=201)
+def initiate(body: ApplicationInit):
+    application = store.create({"email": body.email})
+    return with_metadata(application)                 # 201：不完整不是错误
+
+@app.patch("/partial-account-applications/{application_id}")
+def update(application_id: str, body: ApplicationPatch):
+    application = store.get(application_id) or _not_found()
+    changes = body.model_dump(exclude_none=True)
+    if "cardType" in changes and changes["cardType"] not in CARD_TYPES:
+        raise HTTPException(400, f"Invalid cardType; allowed: {sorted(CARD_TYPES)}")  # 无效数据：拒绝
+    application.update(changes)
+    return with_metadata(application)
+
+@app.post("/partial-account-applications/{application_id}/validations")
+def validate(application_id: str):
+    application = store.get(application_id) or _not_found()
+    result = with_metadata(application)
+    if result["metadata"]["status"] != "COMPLETE":
+        raise HTTPException(400, result["metadata"]["messages"])     # 现在缺数据才算错误
+    final = store.promote(application)                # 变成正式的开户申请
+    return Response(status_code=303,                  # 303 See Other：去这里看结果
+                    headers={"Location": f"/account-applications/{final['id']}"})
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+import { Hono } from "hono";
+import { z } from "zod";
+import { zValidator } from "@hono/zod-validator";
+
+const app = new Hono();
+const REQUIRED = ["services", "branchId", "cardType", "holderName", "holderAddress"] as const;
+
+const ApplicationInit = z.object({ email: z.string().email() });   // 发起时唯一必填：能联系到申请人
+const ApplicationPatch = z.object({                                 // 其余全部可选，任意顺序提供
+  services: z.array(z.string()),
+  branchId: z.string(),
+  cardType: z.enum(["debit", "credit"]),                            // 无效的值会被 zValidator 以 400 拒绝
+  holderName: z.string(),
+  holderAddress: z.string(),
+}).partial();
+
+type Application = { id: string; email: string } &amp; z.infer&lt;typeof ApplicationPatch&gt;;
+
+/** 数据 + 元数据：每次保存后都告诉消费者还缺什么 */
+function withMetadata(application: Application) {
+  const missing = REQUIRED.filter((name) =&gt; application[name] === undefined);
+  return {
+    data: application,
+    metadata: {
+      status: missing.length ? "INCOMPLETE" : "COMPLETE",
+      messages: missing.map((name) =&gt; ({
+        type: "MISSING_PROPERTY",
+        detail: `${name} is missing`,
+        source: { location: "body", pointer: `#/${name}` },
+      })),
+    },
+  };
+}
+
+app.post("/partial-account-applications", zValidator("json", ApplicationInit), (c) =&gt; {
+  const application = store.create(c.req.valid("json"));
+  return c.json(withMetadata(application), 201);                    // 201：不完整不是错误
+});
+
+app.patch("/partial-account-applications/:id", zValidator("json", ApplicationPatch), (c) =&gt; {
+  const application = store.get(c.req.param("id"));
+  if (!application) return c.json({ message: "Application not found" }, 404);
+  Object.assign(application, c.req.valid("json"));
+  return c.json(withMetadata(application));
+});
+
+app.post("/partial-account-applications/:id/validations", (c) =&gt; {
+  const application = store.get(c.req.param("id"));
+  if (!application) return c.json({ message: "Application not found" }, 404);
+  const { metadata } = withMetadata(application);
+  if (metadata.status !== "COMPLETE") {
+    return c.json({ errors: metadata.messages }, 400);              // 现在缺数据才算错误
+  }
+  const final = store.promote(application);                         // 变成正式的开户申请
+  return c.redirect(`/account-applications/${final.id}`, 303);      // 303 See Other
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+@RestController
+@RequestMapping("/partial-account-applications")
+public class PartialApplicationController {
+
+    record ApplicationInit(@NotNull @Email String email) {}          // 发起时唯一必填：能联系到申请人
+    record ApplicationPatch(List&lt;String&gt; services, String branchId, CardType cardType,
+                            String holderName, String holderAddress) {}  // 其余全部可选
+    enum CardType { debit, credit }                                  // 无效的值会被 Spring 以 400 拒绝
+
+    record Message(String type, String detail, Map&lt;String, String&gt; source) {}
+    record Metadata(String status, List&lt;Message&gt; messages) {}
+    record Envelope(Application data, Metadata metadata) {}
+
+    /** 数据 + 元数据：每次保存后都告诉消费者还缺什么 */
+    private Envelope withMetadata(Application application) {
+        List&lt;Message&gt; messages = application.missingProperties().stream()
+            .map(name -&gt; new Message("MISSING_PROPERTY", name + " is missing",
+                                     Map.of("location", "body", "pointer", "#/" + name)))
+            .toList();
+        return new Envelope(application,
+            new Metadata(messages.isEmpty() ? "COMPLETE" : "INCOMPLETE", messages));
+    }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)                              // 201：不完整不是错误
+    public Envelope initiate(@Valid @RequestBody ApplicationInit body) {
+        return withMetadata(store.create(body.email()));
+    }
+
+    @PatchMapping("/{id}")
+    public Envelope update(@PathVariable String id, @RequestBody ApplicationPatch body) {
+        Application application = store.find(id);
+        application.merge(body);                                     // 只覆盖提供了的属性
+        return withMetadata(application);
+    }
+
+    @PostMapping("/{id}/validations")
+    public ResponseEntity&lt;?&gt; validate(@PathVariable String id) {
+        Envelope result = withMetadata(store.find(id));
+        if (!result.metadata().status().equals("COMPLETE")) {        // 现在缺数据才算错误
+            return ResponseEntity.badRequest().body(Map.of("errors", result.metadata().messages()));
+        }
+        Application finalApplication = store.promote(result.data()); // 变成正式的开户申请
+        return ResponseEntity.status(HttpStatus.SEE_OTHER)           // 303 See Other
+            .location(URI.create("/account-applications/" + finalApplication.id()))
+            .build();
+    }
+}
+</pre>
+</div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 通用的 data + metadata 结构</div>
+  <p>
+    上一章给列表响应引入了 <code>{data, metadata}</code> 的结构。把它推广到所有响应，就能在任何地方干净地把「业务数据」和「关于这份数据的信息」（缺什么、哪里不对、分页……）分开。
+  </p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>操作流是消费者为完成一个用例而进行的一连串 API 调用。</li>
+  <li>好的操作流建立在好用的数据和操作之上，但还必须被当作整体来看。</li>
+  <li>流程要简洁：步骤尽量少。</li>
+  <li>流程要灵活：适用于各种场景，少约束界面流程，最好能从中间某一步切入。</li>
+  <li>流程中的操作要在该流程的语境里满足需求，并帮助调用流程里的其他操作。</li>
+  <li>相似的流程复用相似的模式，以求一致、标准、可猜测。</li>
+  <li>在改进完数据和操作之后再优化流程。</li>
+  <li>找优化点：质疑步骤的必要性，检查错误和数据加工能否避免，重新考虑数据的保存方式。</li>
+  <li>优化手段：增加针对用例的功能或数据、新增专用操作、合并操作 —— 但不能牺牲清晰度和范围。</li>
+  <li>允许部分保存，让消费者按需收集数据；发起流程时别忘了收集最少的关键数据。</li>
+  <li>把校验和完成分开：让消费者知道还缺什么，让最终用户在结束前有机会核对。</li>
+  <li>同时支持一步到位和分步保存，让消费者自己选择。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      医疗预约 API 的挂号流程：<code>GET /doctors</code>（返回所有医生）→ <code>GET /doctors/{doctorId}/slots</code>（返回该医生已占用和空闲的时段）→ <code>PATCH /doctors/{doctorId}/slots/{slotId}</code>（把患者信息写进时段）。有什么问题？
+      <details class="ans"><summary>参考答案</summary>
+        ① 要消费者加工数据：从全部时段里自己挑出空闲的 → 提供筛选或专用操作「列出可预约时段」。
+        ② 必须先选医生再看时段，流程死板 → 提供跨医生搜索：<code>GET /available-slots?specialty=…&amp;date=…</code>。
+        ③ 「预约」这个核心能力被藏在「更新时段」里，而且暴露了提供者的数据模型 → <code>POST /appointments</code>（请求体：时段 ID、患者信息），以后还能自然地取消、改期。
+        ④ 可避免的错误：两人同时抢同一个时段时，要有明确的错误反馈。
+      </details>
+    </li>
+    <li>
+      装修报价 API：发起报价 → 设置房间数（已设置则失败）→ 逐个添加房间（上一个房间没填完则失败）→ 依次设置面积、现状、可达性（顺序错了就失败）→ 添加服务 → 描述项目（房间没填完则失败）→ 估价。如何改进？
+      <details class="ans"><summary>参考答案</summary>
+        这是典型的「保存步骤绑死流程」，而且明显在照着一个向导式 UI 设计。改进：
+        ① 支持一步到位：<code>POST /quotes</code> 一次提交项目描述和所有房间（每个房间含面积、现状、可达性、服务），直接返回估价 —— 对「快速粗估」来说这才是主路径。
+        ② 支持分步：<code>POST /partial-quotes</code> 加 <code>PATCH</code> 任意顺序补充，响应里用 <code>status</code> 和 <code>messages</code> 说明还缺什么。
+        ③ 去掉「房间数」这个步骤 —— 它可以从房间列表推断出来。
+        ④ 把一个房间的面积、现状、可达性合并成对「房间」资源的一次创建/更新。
+      </details>
+    </li>
+    <li>挑一个你熟悉的 App 里的多步表单（注册、下单、报销……），画出它背后可能的 API 调用序列，然后用本章的四个问题检查它。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

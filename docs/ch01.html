@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 1 章 · 什么是 API 设计 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="1">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 1 章</span>
+<h1>什么是 API 设计</h1>
+<p class="lede">
+  你一定用过让人抓狂的 API：字段名像密码、报错只有一句「Bad Request」、升级之后程序莫名其妙崩溃。
+  这些问题的根源往往是同一个 —— <strong>设计没做好</strong>。这一章先把「Web API」和「API 设计」这两个词说清楚，
+  再给出整本教程要走的路线图。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>说得清什么是 Web API：它是给<strong>程序</strong>用的、走 <strong>HTTP</strong> 的、<strong>隐藏实现</strong>的、<strong>给别人</strong>用的接口</li>
+    <li>理解糟糕的设计会伤害谁：开发者、基础设施、最终用户，最后是公司的收入</li>
+    <li>知道设计发生在 API 生命周期的哪个位置、由哪些角色完成</li>
+    <li>记住本教程的方法：<strong>四个步骤 × 四个层次</strong></li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="what">Web API 是什么</h2>
+
+<p>
+  API 是 Application Programming Interface（应用程序编程接口）的缩写。
+  <strong>Web API</strong> 让一个程序可以通过网络调用另一个程序的功能：读取客户地址、发一条短信、叫一辆出租车、开关一盏智能灯……
+  调用方不需要知道对方的代码怎么写，只要被授权，几行代码就能用上。
+</p>
+
+<p>整本教程用一个虚构的社交网络 <strong>SOCNET</strong> 做例子。我们从四个角度来认识 Web API。</p>
+
+<h3>① 它是给「程序」用的远程接口</h3>
+
+<p>
+  提供 API 的一方叫<strong>提供者（provider）</strong>，也叫服务端、后端；
+  调用 API 的一方叫<strong>消费者（consumer）</strong>，也叫客户端。
+  一个 API 可以提供很多<strong>操作（operation）</strong>，也可以被很多不同的程序同时使用。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="SOCNET 的手机应用、网站和健康检查程序通过互联网调用后端 API，后端再通过内网调用 Friends 和 Messages 两个内部 API">
+  <!-- consumers -->
+  <rect class="bx-b" x="20" y="34" width="150" height="56" rx="10"/>
+  <text class="ttl on-b" x="95" y="58" text-anchor="middle">手机 App</text>
+  <text class="sm" x="95" y="76" text-anchor="middle">用户点「分享」</text>
+
+  <rect class="bx-b" x="20" y="130" width="150" height="56" rx="10"/>
+  <text class="ttl on-b" x="95" y="154" text-anchor="middle">网站</text>
+  <text class="sm" x="95" y="172" text-anchor="middle">用户刷时间线</text>
+
+  <rect class="bx-b" x="20" y="226" width="150" height="56" rx="10"/>
+  <text class="ttl on-b" x="95" y="250" text-anchor="middle">健康检查程序</text>
+  <text class="sm" x="95" y="268" text-anchor="middle">没有人类用户</text>
+
+  <text class="lbl" x="95" y="312" text-anchor="middle">消费者（客户端）</text>
+
+  <!-- internet -->
+  <path class="ln-b" d="M170 62 H300" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M170 158 H300" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M170 254 H236 V176 H300" marker-end="url(#ar-b)"/>
+  <text class="sm" x="236" y="54" text-anchor="middle">互联网</text>
+  <text class="mono sm" x="236" y="150" text-anchor="middle">HTTP</text>
+
+  <!-- backend -->
+  <rect class="bx-a" x="302" y="30" width="190" height="252" rx="12"/>
+  <text class="ttl on-a" x="397" y="54" text-anchor="middle">SOCNET 后端</text>
+  <rect class="bx" x="318" y="68" width="74" height="30" rx="6"/>
+  <text class="mono" x="355" y="88" text-anchor="middle">Share</text>
+  <rect class="bx" x="318" y="144" width="74" height="30" rx="6"/>
+  <text class="mono" x="355" y="164" text-anchor="middle">Timeline</text>
+  <text class="sm" x="355" y="118" text-anchor="middle">Web API</text>
+  <text class="sm" x="355" y="194" text-anchor="middle">的两个操作</text>
+  <text class="lbl" x="397" y="262" text-anchor="middle">提供者（服务端）</text>
+  <text class="sm" x="440" y="124" text-anchor="middle">实现</text>
+  <text class="sm" x="440" y="140" text-anchor="middle">代码</text>
+
+  <!-- internal -->
+  <path class="ln-g" d="M492 100 H590" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M492 212 H590" marker-end="url(#ar-g)"/>
+  <text class="sm" x="541" y="92" text-anchor="middle">内网</text>
+
+  <rect class="bx-g" x="592" y="60" width="148" height="80" rx="10"/>
+  <text class="ttl on-g" x="666" y="84" text-anchor="middle">Friends 服务</text>
+  <text class="mono sm" x="666" y="104" text-anchor="middle">Add · Detect</text>
+  <text class="sm" x="666" y="124" text-anchor="middle">识别照片里的好友</text>
+
+  <rect class="bx-g" x="592" y="172" width="148" height="80" rx="10"/>
+  <text class="ttl on-g" x="666" y="196" text-anchor="middle">Messages 服务</text>
+  <text class="mono sm" x="666" y="216" text-anchor="middle">Save · Search</text>
+  <text class="sm" x="666" y="236" text-anchor="middle">存储和查找消息</text>
+
+  <text class="lbl" x="666" y="312" text-anchor="middle">后端自己也是别人的消费者</text>
+</svg>
+<figcaption>图 1-1　同一个 Web API 可以被很多程序调用；一个程序既可以提供 API，也可以消费别人的 API</figcaption>
+</figure>
+
+<h3>② 它使用 HTTP 协议</h3>
+
+<p>
+  Web API 里的「Web」来自 HTTP —— 就是浏览器打开网页用的那个协议。
+  消费者发出一个 <strong>HTTP 请求</strong>，说明「要做什么」以及「需要的数据」；
+  服务端处理完后回一个 <strong>HTTP 响应</strong>，说明「做得怎么样」以及「结果数据」。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="手机应用发送 POST /statuses 请求，后端返回 201 Created 响应">
+  <rect class="bx-b" x="24" y="60" width="150" height="110" rx="12"/>
+  <text class="ttl on-b" x="99" y="86" text-anchor="middle">SOCNET App</text>
+  <text class="lbl" x="99" y="112" text-anchor="middle">消息：Hello!</text>
+  <rect class="bx" x="64" y="126" width="70" height="28" rx="14"/>
+  <text x="99" y="145" text-anchor="middle">分享</text>
+
+  <rect class="bx-a" x="586" y="60" width="150" height="110" rx="12"/>
+  <text class="ttl on-a" x="661" y="86" text-anchor="middle">SOCNET 后端</text>
+  <text class="lbl" x="661" y="112" text-anchor="middle">保存消息</text>
+  <text class="lbl" x="661" y="132" text-anchor="middle">识别好友 …</text>
+
+  <path class="ln-b" d="M176 88 H584" marker-end="url(#ar-b)"/>
+  <rect class="bx" x="250" y="26" width="260" height="56" rx="8"/>
+  <text class="mono on-b" x="264" y="46">POST /statuses</text>
+  <text class="mono sm" x="264" y="66">{ "message": "Hello!" }</text>
+  <text class="sm" x="380" y="16" text-anchor="middle">HTTP 请求：做什么 + 所需数据</text>
+
+  <path class="ln-g" d="M584 146 H176" marker-end="url(#ar-g)"/>
+  <rect class="bx" x="250" y="152" width="260" height="56" rx="8"/>
+  <text class="mono on-g" x="264" y="172">201 Created</text>
+  <text class="mono sm" x="264" y="192">{ "id": "12345", ... }</text>
+  <text class="sm" x="380" y="224" text-anchor="middle">HTTP 响应：结果如何 + 结果数据</text>
+</svg>
+<figcaption>图 1-2　一次 Web API 调用 = 一个 HTTP 请求 + 一个 HTTP 响应</figcaption>
+</figure>
+
+<p>
+  任何主流语言都能发 HTTP 请求。下面用三种语言调用 SOCNET 的「分享」操作 —— 注意它们做的是<strong>同一件事</strong>，
+  这正是 Web API 的价值：消费者用什么语言、什么平台都无所谓。
+</p>
+
+<div class="tabs" data-title="调用 POST /statuses">
+<div class="code" data-lang="python">
+<pre>
+# pip install httpx
+import httpx
+
+response = httpx.post(
+    "https://api.soc.net/statuses",
+    json={"message": "Hello!"},                 # 请求体：需要的数据
+    headers={"Authorization": "Bearer &lt;token&gt;"},
+)
+
+print(response.status_code)   # 201 —— 处理得怎么样
+print(response.json()["id"])  # "12345" —— 结果数据
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// Node 18+ / 浏览器 / Deno / Bun 都内置 fetch
+const response = await fetch("https://api.soc.net/statuses", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: "Bearer &lt;token&gt;",
+  },
+  body: JSON.stringify({ message: "Hello!" }),  // 请求体：需要的数据
+});
+
+console.log(response.status);                   // 201 —— 处理得怎么样
+const status: { id: string } = await response.json();
+console.log(status.id);                         // "12345" —— 结果数据
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// Java 11+ 自带 java.net.http
+import java.net.URI;
+import java.net.http.*;
+
+HttpClient client = HttpClient.newHttpClient();
+
+HttpRequest request = HttpRequest.newBuilder()
+    .uri(URI.create("https://api.soc.net/statuses"))
+    .header("Content-Type", "application/json")
+    .header("Authorization", "Bearer &lt;token&gt;")
+    .POST(HttpRequest.BodyPublishers.ofString("""
+        { "message": "Hello!" }
+        """))                                    // 请求体：需要的数据
+    .build();
+
+HttpResponse&lt;String&gt; response =
+    client.send(request, HttpResponse.BodyHandlers.ofString());
+
+System.out.println(response.statusCode());      // 201 —— 处理得怎么样
+System.out.println(response.body());            // {"id":"12345",...} —— 结果数据
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 为什么本教程只讲 REST</div>
+  <p>
+    Web API 有好几种风格：REST、SOAP、GraphQL、gRPC……它们使用 HTTP 的方式各不相同。
+    本教程聚焦 <strong>REST API</strong>：它最常用，背后的架构原则也最扎实（第 4 章会讲）。
+    书里的大多数设计原则换到其他类型的 API 上同样成立；第 14 章会简单讨论什么时候该选别的。
+  </p>
+</div>
+
+<h3>③ 它是「实现」的接口，隐藏幕后细节</h3>
+
+<p>
+  人们常把「提供 API 的那个程序」直接叫作 API，但严格说，API 只是那个程序<strong>露在外面的那一层</strong>。
+  可以把它想成餐厅：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 280" role="img" aria-label="餐厅类比：顾客只和服务员打交道，看不到厨房；消费者只和 API 打交道，看不到实现">
+  <!-- restaurant row -->
+  <text class="ttl" x="20" y="24">餐厅</text>
+  <rect class="bx-b" x="20" y="38" width="150" height="62" rx="10"/>
+  <text class="ttl on-b" x="95" y="64" text-anchor="middle">顾客</text>
+  <text class="sm" x="95" y="84" text-anchor="middle">只和服务员说话</text>
+
+  <rect class="bx-a" x="300" y="38" width="150" height="62" rx="10"/>
+  <text class="ttl on-a" x="375" y="64" text-anchor="middle">服务员</text>
+  <text class="sm" x="375" y="84" text-anchor="middle">唯一可见的部分</text>
+
+  <rect class="bx-d" x="580" y="38" width="160" height="62" rx="10"/>
+  <text class="ttl" x="660" y="64" text-anchor="middle">厨房</text>
+  <text class="sm" x="660" y="84" text-anchor="middle">谁在做、怎么做：看不到</text>
+
+  <path class="ln-b" d="M170 58 H298" marker-end="url(#ar-b)"/>
+  <text class="sm" x="234" y="50" text-anchor="middle">点菜</text>
+  <path class="ln-g" d="M298 84 H172" marker-end="url(#ar-g)"/>
+  <text class="sm" x="234" y="100" text-anchor="middle">上菜</text>
+  <path class="ln-d" d="M450 69 H578" marker-end="url(#ar)"/>
+  <text class="sm" x="514" y="60" text-anchor="middle">下单 / 出餐</text>
+
+  <!-- api row -->
+  <text class="ttl" x="20" y="164">软件</text>
+  <rect class="bx-b" x="20" y="178" width="150" height="62" rx="10"/>
+  <text class="ttl on-b" x="95" y="204" text-anchor="middle">消费者应用</text>
+  <text class="sm" x="95" y="224" text-anchor="middle">只需要会发 HTTP 请求</text>
+
+  <rect class="bx-a" x="300" y="178" width="150" height="62" rx="10"/>
+  <text class="ttl on-a" x="375" y="204" text-anchor="middle">Web API</text>
+  <text class="sm" x="375" y="224" text-anchor="middle">接口：唯一可见的部分</text>
+
+  <rect class="bx-d" x="580" y="178" width="160" height="62" rx="10"/>
+  <text class="ttl" x="660" y="204" text-anchor="middle">实现</text>
+  <text class="sm" x="660" y="224" text-anchor="middle">数据库、微服务、算法…</text>
+
+  <path class="ln-b" d="M170 198 H298" marker-end="url(#ar-b)"/>
+  <text class="sm" x="234" y="190" text-anchor="middle">请求</text>
+  <path class="ln-g" d="M298 224 H172" marker-end="url(#ar-g)"/>
+  <text class="sm" x="234" y="240" text-anchor="middle">结果</text>
+  <path class="ln-d" d="M450 209 H578" marker-end="url(#ar)"/>
+  <text class="sm" x="514" y="200" text-anchor="middle">执行</text>
+
+  <path class="ln-d" d="M565 20 V262"/>
+  <text class="sm" x="640" y="272" text-anchor="middle">幕后发生的事被隐藏</text>
+  <text class="sm" x="260" y="272" text-anchor="middle">消费者只看得到接口</text>
+</svg>
+<figcaption>图 1-3　API 之于实现，就像服务员之于厨房</figcaption>
+</figure>
+
+<p>
+  SOCNET 的 App 开发者不需要知道后端用了几个微服务、什么数据库、人脸识别怎么做的。
+  他们只需要发一个 HTTP 请求，把消息和照片交过去，剩下的由实现处理。
+</p>
+
+<p>
+  下面这段服务端代码把「接口」和「实现」分开写了。请注意哪部分是消费者看得到的（路径、请求体、响应），
+  哪部分是他们永远不该知道的（<code>FriendDetector</code>、<code>MessageStore</code>）。
+</p>
+
+<div class="tabs" data-title="接口 vs 实现">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+app = FastAPI()
+
+# ---------- 接口：消费者能看到的全部 ----------
+class StatusCreate(BaseModel):
+    message: str
+
+class Status(BaseModel):
+    id: str
+    message: str
+
+@app.post("/statuses", status_code=201, response_model=Status)
+def share_status(body: StatusCreate) -&gt; Status:
+    # ---------- 实现：幕后细节，随时可以换 ----------
+    friends = friend_detector.detect(body.message)   # 今天是自研，明天可能换成第三方
+    saved = message_store.save(body.message, friends) # 今天是 Postgres，明天可能是别的
+    return Status(id=saved.id, message=saved.message)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+import { Hono } from "hono";
+
+const app = new Hono();
+
+// ---------- 接口：消费者能看到的全部 ----------
+type StatusCreate = { message: string };
+type Status = { id: string; message: string };
+
+app.post("/statuses", async (c) =&gt; {
+  const body = await c.req.json&lt;StatusCreate&gt;();
+
+  // ---------- 实现：幕后细节，随时可以换 ----------
+  const friends = await friendDetector.detect(body.message);   // 今天是自研，明天可能换成第三方
+  const saved = await messageStore.save(body.message, friends); // 今天是 Postgres，明天可能是别的
+
+  const status: Status = { id: saved.id, message: saved.message };
+  return c.json(status, 201);
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+@RestController
+public class StatusController {
+
+    // ---------- 接口：消费者能看到的全部 ----------
+    public record StatusCreate(String message) {}
+    public record Status(String id, String message) {}
+
+    @PostMapping("/statuses")
+    @ResponseStatus(HttpStatus.CREATED)
+    public Status shareStatus(@RequestBody StatusCreate body) {
+        // ---------- 实现：幕后细节，随时可以换 ----------
+        var friends = friendDetector.detect(body.message());   // 今天是自研，明天可能换成第三方
+        var saved = messageStore.save(body.message(), friends); // 今天是 Postgres，明天可能是别的
+        return new Status(saved.id(), saved.message());
+    }
+}
+</pre>
+</div>
+</div>
+
+<div class="box key">
+  <div class="t">&#9733; 本教程只讲「接口」的设计</div>
+  <p>
+    后面所有章节讨论的都是<strong>消费者看得见的那一层</strong>长什么样，不讨论实现怎么写。
+    上面这样的代码只是为了让你把设计和日常编码对上号。这些设计原则与你用什么语言、什么架构无关
+    （不过实现上的限制有时会反过来影响设计，第 14 章会讲）。
+  </p>
+</div>
+
+<h3>④ 它是给「别人」用的</h3>
+
+<p>
+  API 的使用者几乎从来不只是作者自己。按「谁能用」可以分三类；另外 internal / external 这两个词有时指「谁能用」，
+  有时指「暴露在哪个网络上」，和别人沟通时最好先对齐含义。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="按开放程度划分的三种 API：私有、合作伙伴、公开">
+  <rect class="bx-g" x="20" y="30" width="226" height="150" rx="12"/>
+  <text class="ttl on-g" x="133" y="56" text-anchor="middle">私有 API（Private）</text>
+  <text class="lbl" x="133" y="82" text-anchor="middle">只有提供者自己的组织能用</text>
+  <text class="sm" x="133" y="108" text-anchor="middle">例：SOCNET 后端 API</text>
+  <text class="sm" x="133" y="126" text-anchor="middle">Friends API、Messages API</text>
+  <text class="sm" x="133" y="158" text-anchor="middle">数量最多：有 IT 系统就有它</text>
+
+  <rect class="bx-b" x="267" y="30" width="226" height="150" rx="12"/>
+  <text class="ttl on-b" x="380" y="56" text-anchor="middle">合作伙伴 API（Partner）</text>
+  <text class="lbl" x="380" y="82" text-anchor="middle">只对选定的第三方开放</text>
+  <text class="sm" x="380" y="108" text-anchor="middle">例：SOCNET 的 Search API</text>
+  <text class="sm" x="380" y="126" text-anchor="middle">（付费伙伴可查更多数据）</text>
+
+  <rect class="bx-a" x="514" y="30" width="226" height="150" rx="12"/>
+  <text class="ttl on-a" x="627" y="56" text-anchor="middle">公开 API（Public）</text>
+  <text class="lbl" x="627" y="82" text-anchor="middle">任何遵守使用条款的人都能用</text>
+  <text class="sm" x="627" y="108" text-anchor="middle">例：IPaaS 公司的</text>
+  <text class="sm" x="627" y="126" text-anchor="middle">Face Detection API</text>
+
+  <path class="ln-g" d="M20 206 H246"/>
+  <text class="lbl on-g" x="133" y="228" text-anchor="middle">内部 API（Internal）</text>
+  <path class="ln-a" d="M267 206 H740"/>
+  <text class="lbl on-a" x="503" y="228" text-anchor="middle">外部 API（External）</text>
+</svg>
+<figcaption>图 1-4　API 的三种开放程度。即便是只给自己团队用的 API，也会被「别人」使用：新同事，或者六个月后的你自己</figcaption>
+</figure>
+
+<h2 id="why">为什么设计很重要</h2>
+
+<h3>如果糟糕的 API 是一台厨房电器</h3>
+
+<p>
+  想象一台叫「厨房雷达（Kitchen Radar）」的电器：面板上只有一个写着 <code>MAG.</code> 的按钮，按住才工作，松手就停。
+  翻说明书才知道它其实是用来加热食物的 —— <code>MAG.</code> 是磁控管（magnetron）。想用中火？按住 7 秒、松开 7 秒，自己掐表循环。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="厨房雷达和普通微波炉的对比">
+  <!-- bad -->
+  <rect class="bx-r" x="20" y="20" width="340" height="230" rx="12"/>
+  <text class="ttl on-r" x="190" y="46" text-anchor="middle">厨房雷达：由内而外的设计</text>
+  <rect class="bx" x="44" y="62" width="180" height="120" rx="8"/>
+  <text class="sm" x="134" y="126" text-anchor="middle">（玻璃门）</text>
+  <rect class="bx" x="240" y="62" width="96" height="120" rx="8"/>
+  <text class="mono sm" x="288" y="84" text-anchor="middle">KITCHEN</text>
+  <text class="mono sm" x="288" y="98" text-anchor="middle">RADAR</text>
+  <circle class="bx-r" cx="288" cy="138" r="22"/>
+  <text class="mono on-r" x="288" y="143" text-anchor="middle">MAG.</text>
+  <text class="sm" x="190" y="206" text-anchor="middle">名字看不懂 · 暴露内部零件（磁控管）</text>
+  <text class="sm" x="190" y="224" text-anchor="middle">用户得自己掐秒表调火力</text>
+  <text class="sm" x="190" y="242" text-anchor="middle">乱按还可能烧坏机器</text>
+
+  <!-- good -->
+  <rect class="bx-g" x="400" y="20" width="340" height="230" rx="12"/>
+  <text class="ttl on-g" x="570" y="46" text-anchor="middle">微波炉：从用户需求出发</text>
+  <rect class="bx" x="424" y="62" width="180" height="120" rx="8"/>
+  <text class="sm" x="514" y="126" text-anchor="middle">（玻璃门）</text>
+  <rect class="bx" x="620" y="62" width="96" height="120" rx="8"/>
+  <rect class="bx-g" x="632" y="72" width="72" height="24" rx="5"/>
+  <text class="mono on-g" x="668" y="89" text-anchor="middle">02:00</text>
+  <rect class="bx" x="632" y="104" width="72" height="20" rx="5"/>
+  <text class="sm" x="668" y="118" text-anchor="middle">火力：中</text>
+  <rect class="bx" x="632" y="130" width="72" height="20" rx="5"/>
+  <text class="sm" x="668" y="144" text-anchor="middle">时间 + / −</text>
+  <rect class="bx-g" x="632" y="156" width="72" height="20" rx="5"/>
+  <text class="sm on-g" x="668" y="170" text-anchor="middle">开始加热</text>
+  <text class="sm" x="570" y="206" text-anchor="middle">名字一看就懂 · 表达的是「我要加热食物」</text>
+  <text class="sm" x="570" y="224" text-anchor="middle">内部怎么开关磁控管，用户不用管</text>
+  <text class="sm" x="570" y="242" text-anchor="middle">不看说明书也会用</text>
+</svg>
+<figcaption>图 1-5　两台机器里面是同一个磁控管，区别只在「接口」的设计</figcaption>
+</figure>
+
+<p>
+  这台机器的根本问题是：<strong>它没有回应用户的需求</strong>。人们想要的是「加热食物」，不是「打开磁控管」。
+  说明书救不了它。很荒谬对吧？可现实中长得像厨房雷达的 API 比比皆是 —— 私有的、给伙伴的、公开的都有。
+</p>
+
+<h3>糟糕的设计会伤害谁</h3>
+
+<div class="tw">
+<table>
+  <tr><th>受害者</th><th>他们会说……</th><th>背后的设计问题</th></tr>
+  <tr>
+    <td><strong>开发者与架构</strong></td>
+    <td>
+      「<code>sts</code> 这个字段是什么？」<br>
+      「为什么 <code>createdAt</code> 和 <code>fromDate</code> 的日期格式不一样？」<br>
+      「HTTP 说成功了，可返回的数据里是个错误！」<br>
+      「只给一句 Invalid request，我怎么知道哪里错了？」
+    </td>
+    <td>命名晦涩、不一致、HTTP 用错、缺数据缺操作、暴露内部逻辑导致客户端重复造轮子</td>
+  </tr>
+  <tr>
+    <td><strong>安全与基础设施</strong></td>
+    <td>
+      「用户 A 能读到用户 B 的私信，这正常吗？」<br>
+      「时间线接口有时要转很久，还会吐出一段 Java 内存溢出的堆栈。」
+    </td>
+    <td>设计时没定义清楚「谁能看什么」；没有分页，一次返回整张表；泄露内部信息</td>
+  </tr>
+  <tr>
+    <td><strong>最终用户与第三方</strong></td>
+    <td>
+      「上次更新之后 App 一打开时间线就崩！」<br>
+      「我给朋友转了 10 块，他收到了 1000 块！」<br>
+      「受够了，我要取消订阅。」
+    </td>
+    <td>不向后兼容的修改（<code>sts</code> 改名为 <code>status</code>）、悄悄改变含义（元变成分）、流程复杂</td>
+  </tr>
+</table>
+</div>
+
+<p>错过里程碑、功能缩水、Bug 频发、技术债累积、客户流失 —— 这些最终都会变成组织的真金白银损失。</p>
+
+<h3>好设计带来的回报</h3>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#127919;</span><h4>正好满足需求</h4><p>「这个 API 提供的操作和数据正是我要的。」</p></div>
+  <div class="card"><span class="ic">&#128302;</span><h4>不看文档也能猜对</h4><p>一致、直观，用过一个操作就会用下一个。</p></div>
+  <div class="card"><span class="ic">&#129513;</span><h4>可互操作</h4><p>不同 API 之间的数据能直接对上，代码可以复用。</p></div>
+  <div class="card"><span class="ic">&#128260;</span><h4>解耦、易演进</h4><p>把自研人脸识别换成第三方服务，现有 App 毫无感知。</p></div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 别担心</div>
+  <p>如果你现有的 API 长得像厨房雷达，也不必绝望。修正永远不晚，这套教程就是为此准备的。</p>
+</div>
+
+<h2 id="when">什么时候需要设计</h2>
+
+<ul>
+  <li>
+    <strong>任何新 API 都要设计，包括私有 API。</strong>
+    你写的私有 API 远多于公开 API，它们是练手的最佳机会；而且公开 API 往往建在私有 API 之上，底层一团糟，上层也救不回来。
+    Amazon 在 2002 年就要求所有团队通过「服务接口」沟通，并按「随时可以对外开放」的标准来设计 —— 这是它后来成功的关键之一。
+  </li>
+  <li>
+    <strong>任何修改都要设计。</strong>
+    随手把 <code>sts</code> 改名成 <code>status</code>，没更新的客户端就会崩溃。要么避免破坏性修改，要么在充分评估后有意为之（第 15 章）。
+  </li>
+  <li>
+    <strong>设计发生在「决定做一个 API」之后、「写代码实现」之前。</strong>
+  </li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="API 生命周期：定义、设计、开发、测试、部署、提供与消费，本教程聚焦设计阶段">
+  <g>
+    <rect class="bx" x="16" y="74" width="104" height="50" rx="10"/>
+    <text class="ttl" x="68" y="96" text-anchor="middle">定义</text>
+    <text class="sm" x="68" y="114" text-anchor="middle">Define</text>
+
+    <rect class="bx-a" x="142" y="64" width="124" height="70" rx="12"/>
+    <text class="ttl on-a" x="204" y="94" text-anchor="middle">设计</text>
+    <text class="sm on-a" x="204" y="114" text-anchor="middle">Design</text>
+
+    <rect class="bx" x="288" y="74" width="104" height="50" rx="10"/>
+    <text class="ttl" x="340" y="96" text-anchor="middle">开发</text>
+    <text class="sm" x="340" y="114" text-anchor="middle">Develop</text>
+
+    <rect class="bx" x="414" y="74" width="92" height="50" rx="10"/>
+    <text class="ttl" x="460" y="96" text-anchor="middle">测试</text>
+    <text class="sm" x="460" y="114" text-anchor="middle">Test</text>
+
+    <rect class="bx" x="528" y="74" width="92" height="50" rx="10"/>
+    <text class="ttl" x="574" y="96" text-anchor="middle">部署</text>
+    <text class="sm" x="574" y="114" text-anchor="middle">Deploy</text>
+
+    <rect class="bx" x="642" y="74" width="104" height="50" rx="10"/>
+    <text class="ttl" x="694" y="96" text-anchor="middle">提供 / 消费</text>
+    <text class="sm" x="694" y="114" text-anchor="middle">Provide/Consume</text>
+  </g>
+  <path class="ln" d="M120 99 H140" marker-end="url(#ar)"/>
+  <path class="ln" d="M266 99 H286" marker-end="url(#ar)"/>
+  <path class="ln" d="M392 99 H412" marker-end="url(#ar)"/>
+  <path class="ln" d="M506 99 H526" marker-end="url(#ar)"/>
+  <path class="ln" d="M620 99 H640" marker-end="url(#ar)"/>
+
+  <path class="ln-a" d="M190 62 C170 26 90 26 72 72" marker-end="url(#ar-a)"/>
+  <text class="sm" x="124" y="28" text-anchor="middle">发现需求不清，回头细化</text>
+  <path class="ln-a" d="M340 72 C330 30 240 30 222 62" marker-end="url(#ar-a)"/>
+  <text class="sm" x="296" y="28" text-anchor="middle">开发/测试中发现问题</text>
+  <path class="ln-a" d="M694 126 C660 186 290 186 250 136" marker-end="url(#ar-a)"/>
+  <text class="sm" x="452" y="186" text-anchor="middle">上线后出现新需求 → 修改设计</text>
+  <text class="ttl on-a" x="150" y="156" text-anchor="middle">我们在这里 &#8593;</text>
+</svg>
+<figcaption>图 1-6　API 生命周期。设计是一个反复迭代的活动，不是一次性的瀑布</figcaption>
+</figure>
+
+<h2 id="who">谁来设计</h2>
+
+<p>设计一个 API 需要三种角色坐在一起（可以是同一个人，也可以是三个人）：</p>
+
+<div class="cards">
+  <div class="card">
+    <span class="ic">&#9999;&#65039;</span><h4>API 设计者</h4>
+    <p>把模糊的需求、复杂的业务和晦涩的系统，转化成一个可实现、好用的 HTTP 接口。开发、架构师、产品经理、测试、技术写作者都可以胜任。</p>
+  </div>
+  <div class="card">
+    <span class="ic">&#128218;</span><h4>领域专家（SME）</h4>
+    <p>懂这块业务：银行、物流、CRM……你不必是专家，但要会向专家提问。</p>
+  </div>
+  <div class="card">
+    <span class="ic">&#128295;</span><h4>IT 系统专家</h4>
+    <p>知道系统的真实限制。比如 SOCNET 识别一段 10 秒视频里的人脸要 1 分钟 —— 这会直接影响设计。</p>
+  </div>
+</div>
+
+<p>
+  此外还有一圈<strong>利益相关者</strong>会影响设计：提出需求的人、消费者、安全专家、同行评审者。
+  经验法则：安全方面的意见通常直接采纳；消费者的要求要仔细掂量 —— 照单全收可能会得到一个只有他一家能用的 API。
+</p>
+
+<h2 id="how">怎么设计：四个步骤 × 四个层次</h2>
+
+<p>
+  这是整本教程的地图。<strong>步骤</strong>回答「先做什么后做什么」，<strong>层次</strong>回答「每次只关注一类问题」。
+  两者都不是严格线性的，实际工作中会来回跳。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 420" role="img" aria-label="本教程的方法论：四个设计步骤和四个设计层次">
+  <text class="ttl" x="20" y="24">四个步骤（做什么）</text>
+
+  <rect class="bx" x="20" y="40" width="96" height="76" rx="10"/>
+  <text class="ttl" x="68" y="66" text-anchor="middle">模糊的</text>
+  <text class="ttl" x="68" y="84" text-anchor="middle">需求</text>
+  <text class="sm" x="68" y="104" text-anchor="middle">来自定义阶段</text>
+
+  <rect class="bx-a" x="140" y="40" width="130" height="76" rx="10"/>
+  <text class="ttl on-a" x="205" y="62" text-anchor="middle">① 识别能力</text>
+  <text class="sm" x="205" y="82" text-anchor="middle">自然语言</text>
+  <text class="mono sm" x="205" y="100" text-anchor="middle">「分享一条状态」</text>
+
+  <rect class="bx-a" x="290" y="40" width="130" height="76" rx="10"/>
+  <text class="ttl on-a" x="355" y="62" text-anchor="middle">② 设计接口</text>
+  <text class="sm" x="355" y="82" text-anchor="middle">编程接口</text>
+  <text class="mono sm" x="355" y="100" text-anchor="middle">POST /statuses</text>
+
+  <rect class="bx-a" x="440" y="40" width="130" height="76" rx="10"/>
+  <text class="ttl on-a" x="505" y="62" text-anchor="middle">③ 描述接口</text>
+  <text class="sm" x="505" y="82" text-anchor="middle">标准描述格式</text>
+  <text class="mono sm" x="505" y="100" text-anchor="middle">OpenAPI 文档</text>
+
+  <rect class="bx-a" x="590" y="40" width="150" height="76" rx="10"/>
+  <text class="ttl on-a" x="665" y="62" text-anchor="middle">④ 丰富设计产物</text>
+  <text class="sm" x="665" y="82" text-anchor="middle">示例、Mock、细节…</text>
+  <text class="sm" x="665" y="100" text-anchor="middle">→ 设计参考套件</text>
+
+  <path class="ln" d="M116 78 H138" marker-end="url(#ar)"/>
+  <path class="ln-a" d="M270 78 H288" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M420 78 H438" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M570 78 H588" marker-end="url(#ar-a)"/>
+
+  <text class="sm" x="205" y="134" text-anchor="middle">第 2 章</text>
+  <text class="sm" x="355" y="134" text-anchor="middle">第 3–5 章</text>
+  <text class="sm" x="505" y="134" text-anchor="middle">第 6–7 章</text>
+  <text class="sm" x="665" y="134" text-anchor="middle">第 19 章</text>
+
+  <text class="ttl" x="20" y="176">四个层次（从哪个角度看）</text>
+
+  <rect class="bx-g" x="20" y="192" width="720" height="44" rx="10"/>
+  <text class="ttl on-g" x="36" y="219">第 1 层　做对的事、且足够通用</text>
+  <text class="sm" x="724" y="219" text-anchor="end">满足需求 · 隐藏内部 · 不绑定某个客户端　　第 2–7 章</text>
+
+  <rect class="bx-b" x="44" y="244" width="696" height="44" rx="10"/>
+  <text class="ttl on-b" x="60" y="271">第 2 层　好用、可互操作</text>
+  <text class="sm" x="724" y="271" text-anchor="end">数据 · 操作 · 操作流 · 整个 API　　第 8–11 章</text>
+
+  <rect class="bx-p" x="68" y="296" width="672" height="44" rx="10"/>
+  <text class="ttl on-p" x="84" y="323">第 3 层　纳入约束</text>
+  <text class="sm" x="724" y="323" text-anchor="end">安全 · 效率 · 上下文 · 向后兼容与可扩展　　第 12–15 章</text>
+
+  <rect class="bx" x="92" y="348" width="648" height="44" rx="10"/>
+  <text class="ttl" x="108" y="375">第 4 层　有章法、持续改进的流程</text>
+  <text class="sm" x="724" y="375" text-anchor="end">决策方法 · 设计指南 · 可复用组件 · 自动检查　　第 16–19 章</text>
+</svg>
+<figcaption>图 1-7　本教程的路线图。每一章都落在某个步骤和某个层次的交叉点上</figcaption>
+</figure>
+
+<h3>四个步骤</h3>
+<ol>
+  <li><strong>识别 API 能力</strong>：分析用户需求，用自然语言列出用例、步骤和所需的操作。例如用例「分享一条状态」包含步骤「上传照片」「发送状态」。同一个操作可以服务多个用例。</li>
+  <li><strong>设计编程接口</strong>：找出关键业务概念（用户、状态），把「分享一条消息」翻译成 <code>POST /statuses</code>，再为输入输出建模（Status 有一个字符串类型的 <code>message</code>）。</li>
+  <li><strong>描述编程接口</strong>：用标准的 API 描述格式（OpenAPI）把设计写成蓝图。它既方便和各方讨论，也能直接生成代码和文档。</li>
+  <li><strong>丰富设计产物</strong>：往蓝图里补充细节（<code>message</code> 最长 140 字符），或增加新产物（模拟尚未开发的 API 的 Mock）。</li>
+</ol>
+
+<h3>四个层次</h3>
+<ol>
+  <li><strong>做对的事、且足够通用。</strong>同一个 SOCNET 后端 API 要能同时服务网站和 App，以后做「智能冰箱版」也不用改。</li>
+  <li><strong>好用、可互操作。</strong>字段叫 <code>status</code> 而不是 <code>sts</code>；错误信息要能指导修复；两个 API 用同一种用户 ID。</li>
+  <li>
+    <strong>纳入约束。</strong>只追求好用，可能得到一个无法实现、容易出故障甚至危险的设计：
+    <ul>
+      <li>安全：设计时就要明确「谁能看什么」。</li>
+      <li>效率：时间线别一次返回全部数据。</li>
+      <li>上下文：人脸识别要一分钟，就不能设计成一次调用立即返回，而要设计成「发起任务 → 查询进度 → 取结果」。</li>
+      <li>修改：评估改名的影响，并让设计本身便于扩展。</li>
+    </ul>
+  </li>
+  <li><strong>有章法、持续改进的流程。</strong>设计中的大量决定会反复出现（用 <code>fromDate</code> 还是 <code>from_date</code>？用哪种分页？）。把它们沉淀成设计指南、可复用组件和自动化检查，组成你的「API 设计工具箱」。</li>
+</ol>
+
+<div class="box deep">
+  <div class="t">&#129302; 关于 AI</div>
+  <p>
+    AI 很可能成为设计工具箱里的重要一员，但它会给出错误、不准确或不完整的答案。
+    先掌握设计原则，你才知道什么时候该用 AI、该喂给它什么信息、以及怎么判断它的产出是否真的「做对了事、好用、安全、高效」。
+  </p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>Web API 是程序之间通过网络、使用 HTTP 协议通信的软件接口；本教程聚焦 REST API。</li>
+  <li>API 是实现的接口，理想情况下应隐藏实现细节。</li>
+  <li>API 按开放程度分为私有、合作伙伴、公开三类；三类都需要认真设计。</li>
+  <li>设计的好坏会影响开发效率、安全、基础设施成本、用户体验，最终影响收入。</li>
+  <li>新建 API 要设计，修改 API 也要设计；设计发生在决定做 API 之后、编码之前，并且是迭代的。</li>
+  <li>设计需要 API 设计者、领域专家、IT 系统专家三种角色协作，并听取（但不盲从）各方意见。</li>
+  <li>四个步骤：识别能力 → 设计接口 → 描述接口 → 丰富产物。</li>
+  <li>四个层次：做对的事 → 好用可互操作 → 纳入约束 → 持续改进的流程。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>找一个你最近用过的 API（公司内部的也行），写下三件让你困惑或恼火的事，再对照上面「糟糕的设计会伤害谁」那张表，看它们分别属于哪一类。</li>
+    <li>挑一台你家里的电器，想象把它的面板设计成「厨房雷达」风格：它会暴露哪些内部零件？用户原本的需求是什么？</li>
+    <li>把上面三种语言中你最熟悉的那段客户端代码跑起来，把地址换成 <code>https://httpbin.org/post</code>，观察返回的状态码和响应体。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

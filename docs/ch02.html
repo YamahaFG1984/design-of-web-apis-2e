@@ -1,0 +1,801 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 2 章 · 识别 API 能力 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="2">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 2 章</span>
+<h1>识别 API 能力</h1>
+<p class="lede">
+  设计 API 的第一步不是想 URL 长什么样，而是搞清楚<strong>用户到底要用它做什么</strong>。
+  这一章介绍一张表格 —— API 能力画布（API Capabilities Canvas）—— 用它把一张写着「在线购物」的便利贴，
+  拆解成一组清晰、通用的操作。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解「能力 = 用例 + 操作」，以及为什么此时要用自然语言而不是 <code>POST /xxx</code></li>
+    <li>会用 API 能力画布：先走主路径，再走备选路径和失败路径</li>
+    <li>会用「输入从哪来 / 结果给谁用」发现遗漏的步骤、用例和用户</li>
+    <li>会把具体的步骤提炼成唯一、与场景无关的操作</li>
+    <li>能识别两类陷阱：过于贴合某个消费者，和暴露提供者内部</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="overview">什么是「API 能力」</h2>
+
+<p>
+  <strong>形式追随功能（form follows function）</strong> —— 建筑、电器、App 和 API 都适用这条原则。
+  在决定接口长什么样之前，必须先知道它要完成什么。API 的能力由两样东西组成：
+</p>
+
+<ul>
+  <li><strong>用例（use case）</strong>：用户想达成的事，像一份<em>菜谱</em>。例如「给朋友发消息」。</li>
+  <li><strong>操作（operation）</strong>：完成用例所需的通用<em>食材</em>。例如「列出好友」「发送消息」。API 最终暴露给消费者的就是操作。</li>
+</ul>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="用户需求中的用例被分解为具体步骤，步骤由通用操作满足，通用操作还能支持新的用例">
+  <text class="ttl" x="20" y="22">用户想做的事（用例）</text>
+  <rect class="bx-b" x="20" y="34" width="170" height="44" rx="8"/>
+  <text x="105" y="61" text-anchor="middle">加热一份冷冻餐</text>
+  <rect class="bx-b" x="20" y="88" width="170" height="44" rx="8"/>
+  <text x="105" y="115" text-anchor="middle">烤一个巧克力蛋糕</text>
+  <rect class="bx-d" x="20" y="142" width="170" height="44" rx="8"/>
+  <text class="lbl" x="105" y="169" text-anchor="middle">冲一杯热可可（新用例）</text>
+
+  <text class="ttl" x="295" y="22">通用操作（能力）</text>
+  <rect class="bx-a" x="295" y="64" width="190" height="64" rx="10"/>
+  <text class="ttl on-a" x="390" y="90" text-anchor="middle">以给定火力</text>
+  <text class="ttl on-a" x="390" y="110" text-anchor="middle">加热给定时长</text>
+
+  <path class="ln-b" d="M190 56 C240 56 250 86 293 90" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M190 110 H293" marker-end="url(#ar-b)"/>
+  <path class="ln-d" d="M190 164 C240 164 250 112 293 108" marker-end="url(#ar)"/>
+
+  <text class="ttl" x="570" y="22">接口长相（下一步再说）</text>
+  <rect class="bx" x="570" y="34" width="170" height="54" rx="8"/>
+  <text class="lbl" x="655" y="56" text-anchor="middle">旋钮：火力 / 时间</text>
+  <text class="sm" x="655" y="76" text-anchor="middle">方案 A</text>
+  <rect class="bx" x="570" y="100" width="170" height="54" rx="8"/>
+  <text class="lbl" x="655" y="122" text-anchor="middle">触摸屏：瓦数 / 时长</text>
+  <text class="sm" x="655" y="142" text-anchor="middle">方案 B</text>
+  <path class="ln" d="M485 88 C530 88 530 62 568 62" marker-end="url(#ar)"/>
+  <path class="ln" d="M485 104 C530 104 530 126 568 126" marker-end="url(#ar)"/>
+  <text class="sm" x="655" y="174" text-anchor="middle">不同的设计，同样的能力</text>
+
+  <path class="ln-d" d="M20 204 H740"/>
+
+  <rect class="bx-b" x="20" y="222" width="170" height="36" rx="8"/>
+  <text x="105" y="245" text-anchor="middle">看看朋友们的动态</text>
+  <rect class="bx-b" x="20" y="268" width="170" height="36" rx="8"/>
+  <text x="105" y="291" text-anchor="middle">给朋友发消息</text>
+
+  <rect class="bx-a" x="295" y="216" width="190" height="28" rx="7"/>
+  <text class="on-a" x="390" y="235" text-anchor="middle">获取时间线</text>
+  <rect class="bx-a" x="295" y="250" width="190" height="28" rx="7"/>
+  <text class="on-a" x="390" y="269" text-anchor="middle">列出好友</text>
+  <rect class="bx-a" x="295" y="284" width="190" height="28" rx="7"/>
+  <text class="on-a" x="390" y="303" text-anchor="middle">发送消息</text>
+  <path class="ln-b" d="M190 240 H293" marker-end="url(#ar-b)" transform="translate(0,-10)"/>
+  <path class="ln-b" d="M190 286 C240 286 250 266 293 264" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M190 292 C240 292 250 298 293 298" marker-end="url(#ar-b)"/>
+
+  <rect class="bx-r" x="570" y="232" width="170" height="60" rx="8"/>
+  <text class="on-r" x="655" y="256" text-anchor="middle">读写 MSG 数据库表</text>
+  <text class="sm" x="655" y="276" text-anchor="middle">这不是用户的需求</text>
+</svg>
+<figcaption>图 2-1　能力 = 用例 + 满足用例的通用操作。上半部分是微波炉，下半部分是 SOCNET 后端</figcaption>
+</figure>
+
+<h3>五个要点</h3>
+
+<ol>
+  <li>
+    <strong>输入是「定义阶段」的产出。</strong>它常常短到只够写一张便利贴：「社交网络」「在线购物」。
+    公开 API 的输入可能更完整（用户调研、画像），但通常仍需深挖。
+  </li>
+  <li>
+    <strong>分析用户要达成什么，而不是系统内部怎么运作。</strong>
+    微波炉的用户想「加热冷冻餐」，不想「开关磁控管」。当然，用户是谁很关键：造微波炉的工程师确实需要开关磁控管；
+    数据库 API 的用户确实需要访问表。
+  </li>
+  <li>
+    <strong>操作要通用。</strong>
+    「以给定火力加热给定时长」能同时服务「加热冷冻餐」和「烤蛋糕」，还支持以后才想到的「冲热可可」。
+    如果为每个步骤造一个专用操作（「加热巧克力、黄油和牛奶」），接口会迅速膨胀，新用例还是做不了。
+  </li>
+  <li>
+    <strong>接口长相留到后面。</strong>
+    此刻争论 <code>POST /status</code> 还是 <code>POST /messages</code> 只会分散注意力，
+    而且业务专家未必看得懂。用大家都懂的自然语言写：「发送一条消息」。
+  </li>
+  <li>
+    <strong>澄清概念。</strong>
+    如果大家一会儿说「分享状态」一会儿说「发送消息」，就要问：状态是消息吗？是私信吗？
+    用自然语言反复对齐，会逐步形成一套共同词汇（领域驱动设计里叫「通用语言」）。
+  </li>
+</ol>
+
+<h2 id="canvas">API 能力画布</h2>
+
+<p>
+  画布就是一张七列的表格。它没有发明什么新东西，只是把分析需求时该问的问题固定下来，保证不遗漏。
+  用白板、便利贴都行，但最顺手的工具其实是<strong>电子表格</strong>：增删方便、能筛选，还能做透视表。
+  本仓库 <code>2. Identifying API capabilities/</code> 目录下就有一份示例（<code>.xlsx</code> / <code>.ods</code>）。
+</p>
+
+<div class="tw">
+<table>
+  <tr>
+    <th>用户<br><small>USER</small></th><th>用例<br><small>USE CASE</small></th><th>步骤<br><small>STEP</small></th>
+    <th>输入<br><small>INPUT</small></th><th>成功<br><small>SUCCESS</small></th><th>失败<br><small>FAILURE</small></th><th>操作<br><small>OPERATION</small></th>
+  </tr>
+  <tr>
+    <td>谁在用？</td><td>他们做什么？</td><td>怎么做的？</td>
+    <td>完成这一步需要什么？<br><em>它从哪来？</em></td>
+    <td>成功后发生什么？<br><em>结果被谁用？</em></td>
+    <td>失败时发生什么？<br><em>怎么修复？</em></td>
+    <td>满足这一步的唯一、通用操作是什么？</td>
+  </tr>
+</table>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="使用画布的四个阶段：走主路径、走备选和失败路径、识别操作、检查是否聚焦在正确的需求上">
+  <rect class="bx-g" x="16" y="40" width="168" height="110" rx="12"/>
+  <text class="ttl on-g" x="100" y="66" text-anchor="middle">① 走主路径</text>
+  <text class="sm" x="100" y="90" text-anchor="middle">最常见、一切顺利</text>
+  <text class="sm" x="100" y="108" text-anchor="middle">填：用户 / 用例 / 步骤</text>
+  <text class="sm" x="100" y="126" text-anchor="middle">输入 / 成功</text>
+
+  <rect class="bx-r" x="202" y="40" width="168" height="110" rx="12"/>
+  <text class="ttl on-r" x="286" y="66" text-anchor="middle">② 走备选与失败路径</text>
+  <text class="sm" x="286" y="90" text-anchor="middle">每一步会怎么失败？</text>
+  <text class="sm" x="286" y="108" text-anchor="middle">「如果……怎么办？」</text>
+  <text class="sm" x="286" y="126" text-anchor="middle">还有谁？还做什么？</text>
+
+  <rect class="bx-a" x="388" y="40" width="168" height="110" rx="12"/>
+  <text class="ttl on-a" x="472" y="66" text-anchor="middle">③ 识别操作</text>
+  <text class="sm" x="472" y="90" text-anchor="middle">找相似步骤</text>
+  <text class="sm" x="472" y="108" text-anchor="middle">挖出真实意图</text>
+  <text class="sm" x="472" y="126" text-anchor="middle">填：操作</text>
+
+  <rect class="bx-p" x="574" y="40" width="170" height="110" rx="12"/>
+  <text class="ttl on-p" x="659" y="66" text-anchor="middle">④ 检查聚焦</text>
+  <text class="sm" x="659" y="90" text-anchor="middle">超出需求范围了吗？</text>
+  <text class="sm" x="659" y="108" text-anchor="middle">太贴合某个消费者？</text>
+  <text class="sm" x="659" y="126" text-anchor="middle">暴露提供者内部？</text>
+
+  <path class="ln" d="M184 95 H200" marker-end="url(#ar)"/>
+  <path class="ln" d="M370 95 H386" marker-end="url(#ar)"/>
+  <path class="ln" d="M556 95 H572" marker-end="url(#ar)"/>
+  <path class="ln-d" d="M659 152 C640 198 130 198 102 154" marker-end="url(#ar)"/>
+  <text class="sm" x="380" y="204" text-anchor="middle">反复迭代，并随时找需求方确认</text>
+</svg>
+<figcaption>图 2-2　画布的使用流程：两遍分析 + 提炼操作 + 聚焦检查</figcaption>
+</figure>
+
+<h2 id="nominal">第一遍：走主路径</h2>
+
+<p>我们手上只有一张便利贴：<strong>「在线购物」</strong>。</p>
+
+<h3>1. 谁是用户</h3>
+<p>
+  用户包括<strong>消费者</strong>（调用 API 的应用及其开发者）和应用背后的<strong>最终用户</strong>。
+  最终用户不直接调 API，但他们的需求决定了 API 要有什么能力。
+  用二八法则挑重点：找出贡献 80% 用例的那 20% 用户。这里显然是「在网站或 App 上购物的人」；管理员、企业客户留到第二遍。
+</p>
+
+<h3>2. 他们做什么（用例）</h3>
+<p>
+  购物者不想 <code>select * from product</code>，他们想<strong>「购买商品」</strong>，也可能想「管理配送偏好」。
+  同样用二八法则，先挑最主要的。
+</p>
+
+<h3>3. 怎么做的（步骤）</h3>
+<p>
+  停在用例层会漏掉能力，必须拆成步骤。用户怎么买东西？反复「把商品加入购物车」，然后「结账」。
+  先别急着提炼通用操作，照人们说的原话记下来就好 —— 哪怕有人说的是「往圣诞老人的篮子里放礼物」。
+</p>
+
+<h3>4. 输入与成功结果</h3>
+<p>
+  为每一步写下需要什么、成功后发生什么。保持粗粒度，从用户视角描述，不用列出商品有哪些字段（那是第 5 章的事）。
+</p>
+
+<h3>5. 用「来源」和「去向」找遗漏</h3>
+
+<p>这是画布最有价值的一招。对每个输入问「<strong>它从哪来？</strong>」，对每个成功结果问「<strong>它被谁用？</strong>」。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 340" role="img" aria-label="追问输入的来源和结果的去向，发现遗漏的搜索步骤、管理订单用例和目录管理员用户">
+  <!-- step: add to cart -->
+  <rect class="bx" x="270" y="124" width="220" height="56" rx="10"/>
+  <text class="ttl" x="380" y="148" text-anchor="middle">把商品加入购物车</text>
+  <text class="sm" x="380" y="168" text-anchor="middle">输入：商品、购物车</text>
+
+  <rect class="bx" x="270" y="244" width="220" height="56" rx="10"/>
+  <text class="ttl" x="380" y="268" text-anchor="middle">结账</text>
+  <text class="sm" x="380" y="288" text-anchor="middle">输入：购物车　成功：得到订单</text>
+  <path class="ln" d="M380 180 V242" marker-end="url(#ar)"/>
+
+  <!-- missing step: search -->
+  <rect class="bx-g" x="270" y="14" width="220" height="56" rx="10"/>
+  <text class="ttl on-g" x="380" y="38" text-anchor="middle">＋ 搜索要买的商品</text>
+  <text class="sm" x="380" y="58" text-anchor="middle">输入：商品目录、筛选条件</text>
+  <path class="ln-g" d="M380 70 V122" marker-end="url(#ar-g)"/>
+
+  <text class="lbl on-b" x="150" y="140" text-anchor="middle">「商品从哪来？」</text>
+  <path class="ln-b" d="M218 148 C240 148 240 70 268 50" marker-end="url(#ar-b)"/>
+  <text class="sm" x="150" y="160" text-anchor="middle">用户得先搜到它</text>
+  <text class="sm" x="150" y="178" text-anchor="middle">→ 漏了一个步骤</text>
+
+  <text class="lbl on-b" x="130" y="30" text-anchor="middle">「目录从哪来？」</text>
+  <rect class="bx-g" x="30" y="46" width="200" height="50" rx="10"/>
+  <text class="ttl on-g" x="130" y="68" text-anchor="middle">＋ 用户：目录管理员</text>
+  <text class="sm" x="130" y="86" text-anchor="middle">用例：填充商品目录</text>
+  <path class="ln-b" d="M268 30 H232" marker-end="url(#ar-b)" transform="translate(0,34)"/>
+
+  <text class="lbl on-b" x="622" y="252" text-anchor="middle">「订单被怎么用？」</text>
+  <rect class="bx-g" x="530" y="264" width="200" height="50" rx="10"/>
+  <text class="ttl on-g" x="630" y="286" text-anchor="middle">＋ 用例：管理订单</text>
+  <text class="sm" x="630" y="304" text-anchor="middle">查看状态、修改、取消…</text>
+  <path class="ln-b" d="M490 284 H528" marker-end="url(#ar-b)"/>
+
+  <text class="lbl on-b" x="622" y="34" text-anchor="middle">「搜索结果被怎么用？」</text>
+  <rect class="bx-g" x="530" y="46" width="200" height="50" rx="10"/>
+  <text class="ttl on-g" x="630" y="68" text-anchor="middle">＋ 步骤：查看商品详情</text>
+  <text class="sm" x="630" y="86" text-anchor="middle">加入购物车前先看一眼</text>
+  <path class="ln-b" d="M490 50 H528" marker-end="url(#ar-b)" transform="translate(0,10)"/>
+
+  <text class="sm" x="140" y="270" text-anchor="middle">购物车从哪来？</text>
+  <text class="sm" x="140" y="288" text-anchor="middle">由 API 自己管理 → 没有遗漏</text>
+</svg>
+<figcaption>图 2-3　两个简单的问题，让我们发现了 2 个新步骤、1 个新用例和 1 类新用户（绿色）</figcaption>
+</figure>
+
+<p>
+  输入的来源只有三种：<strong>用户自己知道的</strong>、<strong>API 管理的</strong>、<strong>前面某一步得到的</strong>。
+  如果三种都不是，说明漏了东西。对新发现的元素重复同样的分析。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 发现新领域要先确认</div>
+  <p>挖出来的新东西（比如「管理商品目录」）不一定在原始需求范围内。先找定义阶段的相关方确认，再继续深挖。</p>
+</div>
+
+<h2 id="alt">第二遍：备选路径与失败路径</h2>
+
+<p>只看主路径会得到一个残缺的 API。第二遍做三件事。</p>
+
+<h3>1. 分析每一步的失败</h3>
+<p>
+  从用户视角列出每一步可能出什么问题、<strong>为什么</strong>、<strong>怎么修复</strong>。
+  失败通常源于：输入缺失或无效、数据状态不对、违反业务规则。「怎么修复」常常会指向一个新步骤。
+</p>
+
+<div class="tw">
+<table>
+  <tr><th>步骤</th><th>输入</th><th>失败（→ 修复方法）</th></tr>
+  <tr><td>搜索要买的商品</td><td>目录、筛选条件</td><td>没有匹配的商品（→ 换条件重试）<br>目录是空的（→ 管理员填充目录）</td></tr>
+  <tr><td>查看商品详情</td><td>选中的商品</td><td>商品不存在（→ 搜索商品）</td></tr>
+  <tr><td>把商品加入购物车</td><td>商品、购物车</td><td>商品不存在（→ 搜索商品）</td></tr>
+  <tr><td>结账</td><td>购物车</td><td>购物车是空的（→ 加入商品）<br>某件商品缺货（→ <span class="tag-g">＋ 新步骤</span> 从购物车移除缺货商品）</td></tr>
+  <tr><td><span class="tag-g">新</span> 从购物车移除缺货商品</td><td>商品、购物车</td><td>商品不在购物车里（无需修复）</td></tr>
+</table>
+</div>
+
+<h3>2. 在用例里加备选分支</h3>
+<p>
+  问「<strong>如果……怎么办？</strong>」。如果用户结账时反悔了某件商品？他需要「从购物车移除不想要的商品」；
+  而要移除，得先知道车里有什么 —— 于是又多了一步「核对购物车内容」。
+  类似的问题还有：如果用户没填收货地址？如果购物车里商品的价格变了？
+</p>
+
+<h3>3. 回头处理备选用户和用例</h3>
+<p>
+  第一遍搁置的「管理配送偏好」「目录管理员」「企业客户」现在要补上；还有处理异常的用例，比如「反馈订单问题」「到货提醒」。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 次要不等于可以忽略</div>
+  <p>管理员不如普通用户显眼，但如果没有人能往目录里加商品，整个系统就转不起来。</p>
+</div>
+
+<h2 id="ops">把步骤提炼成操作</h2>
+
+<p>
+  如果把每个步骤原样变成一个 API 操作，会得到一堆大同小异的东西。
+  <strong>步骤是具体的、带场景的；操作是唯一的、与场景无关的。</strong>
+  对每个步骤做两件事：找有没有相似的步骤；借助描述、输入和成功结果，挖出它的<strong>真实意图</strong>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 400" role="img" aria-label="多个具体步骤被归并为少量通用操作">
+  <text class="ttl" x="20" y="22">步骤（带着场景）</text>
+  <text class="ttl" x="540" y="22">操作（唯一、通用）</text>
+
+  <text class="sm" x="20" y="44">用例：购买商品</text>
+  <g>
+    <rect class="bx-b" x="20" y="52" width="250" height="28" rx="6"/><text x="32" y="71">搜索要买的商品</text>
+    <rect class="bx-g" x="20" y="86" width="250" height="28" rx="6"/><text x="32" y="105">查看商品详细信息</text>
+    <rect class="bx" x="20" y="120" width="250" height="28" rx="6"/><text x="32" y="139">把商品加入购物车</text>
+    <rect class="bx" x="20" y="154" width="250" height="28" rx="6"/><text x="32" y="173">核对购物车内容</text>
+    <rect class="bx-p" x="20" y="188" width="250" height="28" rx="6"/><text x="32" y="207">从购物车移除不想要的商品</text>
+    <rect class="bx" x="20" y="222" width="250" height="28" rx="6"/><text x="32" y="241">结账</text>
+    <rect class="bx-p" x="20" y="256" width="250" height="28" rx="6"/><text x="32" y="275">从购物车移除缺货商品</text>
+  </g>
+  <text class="sm" x="20" y="306">用例：填充商品目录（管理员）</text>
+  <g>
+    <rect class="bx-b" x="20" y="314" width="250" height="28" rx="6"/><text x="32" y="333">查找相似商品</text>
+    <rect class="bx-g" x="20" y="348" width="250" height="28" rx="6"/><text x="32" y="367">确认商品是否不同</text>
+  </g>
+
+  <g>
+    <rect class="bx-b" x="540" y="52" width="200" height="30" rx="6"/><text class="ttl on-b" x="640" y="72" text-anchor="middle">搜索商品</text>
+    <rect class="bx-g" x="540" y="96" width="200" height="30" rx="6"/><text class="ttl on-g" x="640" y="116" text-anchor="middle">获取商品详情</text>
+    <rect class="bx" x="540" y="140" width="200" height="30" rx="6"/><text class="ttl" x="640" y="160" text-anchor="middle">把商品加入购物车</text>
+    <rect class="bx" x="540" y="184" width="200" height="30" rx="6"/><text class="ttl" x="640" y="204" text-anchor="middle">列出购物车中的商品</text>
+    <rect class="bx-p" x="540" y="228" width="200" height="30" rx="6"/><text class="ttl on-p" x="640" y="248" text-anchor="middle">从购物车移除商品</text>
+    <rect class="bx" x="540" y="272" width="200" height="30" rx="6"/><text class="ttl" x="640" y="292" text-anchor="middle">结账</text>
+  </g>
+
+  <path class="ln-b" d="M270 66 H538" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M270 328 C420 328 400 74 538 70" marker-end="url(#ar-b)"/>
+  <path class="ln-g" d="M270 100 C400 100 420 108 538 110" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M270 362 C440 362 420 120 538 116" marker-end="url(#ar-g)"/>
+  <path class="ln" d="M270 134 C400 134 420 152 538 154" marker-end="url(#ar)"/>
+  <path class="ln" d="M270 168 C400 168 420 196 538 198" marker-end="url(#ar)"/>
+  <path class="ln-p" d="M270 202 C400 202 420 238 538 240" marker-end="url(#ar-p)"/>
+  <path class="ln-p" d="M270 270 C400 270 420 250 538 246" marker-end="url(#ar-p)"/>
+  <path class="ln" d="M270 236 C400 236 420 284 538 286" marker-end="url(#ar)"/>
+
+  <text class="sm" x="640" y="330" text-anchor="middle">9 个步骤 → 6 个操作</text>
+  <text class="sm" x="640" y="348" text-anchor="middle">去掉「要买的」「不想要的」「缺货」</text>
+  <text class="sm" x="640" y="366" text-anchor="middle">这些只属于某个场景的修饰语</text>
+</svg>
+<figcaption>图 2-4　同色的步骤共享同一个操作。「核对购物车内容」的真实意图要看成功结果才知道：它返回的是「购物车中的商品列表」</figcaption>
+</figure>
+
+<p>
+  为什么「搜索要买的商品」不能直接当操作？因为「要买的」把它绑死在购物场景上。
+  去掉这个修饰语，「搜索商品」就能在上线很久之后被用来做「生日愿望清单」这样的新功能。
+</p>
+
+<h3>用代码看一眼「透视」</h3>
+
+<p>
+  画布填完后，按「操作」这一列重新分组（电子表格里的透视表），就能一眼看出每个操作被哪些步骤用到。
+  下面用三种语言做同一件事，顺便让你感受一下画布其实就是一份结构化数据：
+</p>
+
+<div class="tabs" data-title="按操作透视画布">
+<div class="code" data-lang="python">
+<pre>
+from collections import defaultdict
+from dataclasses import dataclass
+
+@dataclass
+class Row:
+    user: str
+    use_case: str
+    step: str
+    operation: str
+
+canvas = [
+    Row("最终用户", "购买商品", "搜索要买的商品",           "搜索商品"),
+    Row("最终用户", "购买商品", "查看商品详细信息",         "获取商品详情"),
+    Row("最终用户", "购买商品", "把商品加入购物车",         "把商品加入购物车"),
+    Row("最终用户", "购买商品", "核对购物车内容",           "列出购物车中的商品"),
+    Row("最终用户", "购买商品", "从购物车移除不想要的商品", "从购物车移除商品"),
+    Row("最终用户", "购买商品", "结账",                     "结账"),
+    Row("最终用户", "购买商品", "从购物车移除缺货商品",     "从购物车移除商品"),
+    Row("目录管理员", "填充目录", "查找相似商品",           "搜索商品"),
+    Row("目录管理员", "填充目录", "确认商品是否不同",       "获取商品详情"),
+]
+
+by_operation: dict[str, list[Row]] = defaultdict(list)
+for row in canvas:
+    by_operation[row.operation].append(row)
+
+for operation, rows in by_operation.items():
+    print(f"{operation}  （被 {len(rows)} 个步骤使用）")
+    for r in rows:
+        print(f"   - [{r.user} / {r.use_case}] {r.step}")
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+type Row = { user: string; useCase: string; step: string; operation: string };
+
+const canvas: Row[] = [
+  { user: "最终用户", useCase: "购买商品", step: "搜索要买的商品",           operation: "搜索商品" },
+  { user: "最终用户", useCase: "购买商品", step: "查看商品详细信息",         operation: "获取商品详情" },
+  { user: "最终用户", useCase: "购买商品", step: "把商品加入购物车",         operation: "把商品加入购物车" },
+  { user: "最终用户", useCase: "购买商品", step: "核对购物车内容",           operation: "列出购物车中的商品" },
+  { user: "最终用户", useCase: "购买商品", step: "从购物车移除不想要的商品", operation: "从购物车移除商品" },
+  { user: "最终用户", useCase: "购买商品", step: "结账",                     operation: "结账" },
+  { user: "最终用户", useCase: "购买商品", step: "从购物车移除缺货商品",     operation: "从购物车移除商品" },
+  { user: "目录管理员", useCase: "填充目录", step: "查找相似商品",           operation: "搜索商品" },
+  { user: "目录管理员", useCase: "填充目录", step: "确认商品是否不同",       operation: "获取商品详情" },
+];
+
+const byOperation = new Map&lt;string, Row[]&gt;();
+for (const row of canvas) {
+  const rows = byOperation.get(row.operation) ?? [];
+  rows.push(row);
+  byOperation.set(row.operation, rows);
+}
+
+for (const [operation, rows] of byOperation) {
+  console.log(`${operation}  （被 ${rows.length} 个步骤使用）`);
+  for (const r of rows) console.log(`   - [${r.user} / ${r.useCase}] ${r.step}`);
+}
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import java.util.*;
+import java.util.stream.Collectors;
+
+record Row(String user, String useCase, String step, String operation) {}
+
+public class CanvasPivot {
+    public static void main(String[] args) {
+        List&lt;Row&gt; canvas = List.of(
+            new Row("最终用户", "购买商品", "搜索要买的商品",           "搜索商品"),
+            new Row("最终用户", "购买商品", "查看商品详细信息",         "获取商品详情"),
+            new Row("最终用户", "购买商品", "把商品加入购物车",         "把商品加入购物车"),
+            new Row("最终用户", "购买商品", "核对购物车内容",           "列出购物车中的商品"),
+            new Row("最终用户", "购买商品", "从购物车移除不想要的商品", "从购物车移除商品"),
+            new Row("最终用户", "购买商品", "结账",                     "结账"),
+            new Row("最终用户", "购买商品", "从购物车移除缺货商品",     "从购物车移除商品"),
+            new Row("目录管理员", "填充目录", "查找相似商品",           "搜索商品"),
+            new Row("目录管理员", "填充目录", "确认商品是否不同",       "获取商品详情")
+        );
+
+        Map&lt;String, List&lt;Row&gt;&gt; byOperation = canvas.stream()
+            .collect(Collectors.groupingBy(Row::operation, LinkedHashMap::new, Collectors.toList()));
+
+        byOperation.forEach((operation, rows) -&gt; {
+            System.out.printf("%s  （被 %d 个步骤使用）%n", operation, rows.size());
+            rows.forEach(r -&gt; System.out.printf("   - [%s / %s] %s%n", r.user(), r.useCase(), r.step()));
+        });
+    }
+}
+</pre>
+</div>
+</div>
+
+<h2 id="focus">聚焦在正确的需求上</h2>
+
+<ul>
+  <li>
+    <strong>守住需求范围。</strong>「查询用户的银行账户余额」和「在线购物」关系很远，高度可疑 —— 但最终由领域专家和需求方决定。
+    另一个快速判断：某一步的结果既没人用、也不是别的步骤的输入，那多半可以删掉（例如购物流程里的「列出商品供应商」）。
+  </li>
+  <li>
+    <strong>多问几次「为什么」。</strong>
+    「为什么更新地址时用户得先停用旧地址？」——「因为数据库里一个用户只能有一个生效地址。」
+    这是提供者的事，不是消费者的事。连续追问能挖到问题的根，分辨出哪些是真正的能力、哪些是多余的。
+  </li>
+  <li><strong>警惕两种错误视角</strong>，下面两节分别展开。</li>
+</ul>
+
+<h2 id="consumer">陷阱一：过于贴合某个消费者</h2>
+
+<h3>照着 UI 画 API</h3>
+
+<p>
+  参考已有界面或线框图来设计没问题，但要小心把<strong>界面流程</strong>当成了<strong>业务流程</strong>。
+  假设注册页面分四屏，于是 API 也做了四个操作：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="照着四屏界面设计的四个操作，对比一个与场景无关的创建用户操作">
+  <rect class="bx-r" x="20" y="20" width="350" height="210" rx="12"/>
+  <text class="ttl on-r" x="195" y="46" text-anchor="middle">贴合 UI：4 次调用</text>
+  <rect class="bx" x="40" y="62" width="310" height="28" rx="6"/><text x="52" y="81">① 保存用户的邮箱</text>
+  <rect class="bx" x="40" y="96" width="310" height="28" rx="6"/><text x="52" y="115">② 保存用户的姓和名</text>
+  <rect class="bx" x="40" y="130" width="310" height="28" rx="6"/><text x="52" y="149">③ 保存用户的地址</text>
+  <rect class="bx" x="40" y="164" width="310" height="28" rx="6"/><text x="52" y="183">④ 确认新用户</text>
+  <text class="sm" x="195" y="214" text-anchor="middle">屏幕顺序一改就要改 API；第 ④ 步没调 → 残缺账户</text>
+
+  <rect class="bx-g" x="390" y="20" width="350" height="210" rx="12"/>
+  <text class="ttl on-g" x="565" y="46" text-anchor="middle">与场景无关：1 次调用</text>
+  <rect class="bx-g" x="410" y="96" width="310" height="62" rx="8"/>
+  <text class="ttl on-g" x="565" y="122" text-anchor="middle">创建新用户</text>
+  <text class="sm" x="565" y="142" text-anchor="middle">邮箱 + 姓名 + 地址 一次给齐</text>
+  <text class="sm" x="565" y="196" text-anchor="middle">界面想分几屏收集信息都可以</text>
+  <text class="sm" x="565" y="214" text-anchor="middle">服务端程序、别的 App 也能直接用</text>
+</svg>
+<figcaption>图 2-5　信号：流程里出现了很细碎的字段，或者改一下界面流程 API 就得跟着改</figcaption>
+</figure>
+
+<h3>替消费者做它自己的业务</h3>
+
+<p>
+  某个 App 想根据用户地址显示天气图标，于是提出「获取用户所在地的天气预报」。
+  这和「在线购物」无关，是这个 App 自己的事，不该进我们的 API。
+  但换个角度，天气相关的能力可能有意义：给「搜索商品」加一个「适用天气」筛选（冬季、夏季、雨天），由消费者决定传什么值。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 信号</div>
+  <p>某个元素（用户、用例、步骤、输入、结果、操作）牵扯到与本领域无关或关系很远的逻辑。拿不准就问领域专家；关系较远的领域也可能意味着需要拆成多个 API（第 11 章）。</p>
+</div>
+
+<h2 id="provider">陷阱二：暴露提供者的内部</h2>
+
+<p>反映提供者视角的 API 难懂、难用，还可能危及底层系统。三种常见形式：</p>
+
+<h3>1. 暴露数据组织方式</h3>
+
+<p>
+  客户数据在数据库里分成 <code>CUSD</code>（客户数据）和 <code>CUSA</code>（客户地址）两张表，
+  于是 API 提供了「读取 CUSD」和「读取 CUSA」。把名字换成「读取客户数据」「读取客户地址」也没好多少 —— 消费者依然要自己拼。
+  正确做法是一个「<strong>读取客户信息</strong>」，由实现去聚合。
+</p>
+
+<h3>2. 暴露业务逻辑</h3>
+
+<p>
+  系统出于安全考虑保留旧地址，只有状态为「生效」的才是当前地址。于是「修改地址」变成了三步：
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="把业务逻辑交给消费者执行需要三次调用且可能中途失败导致数据损坏，对比由实现处理业务逻辑的单次调用">
+  <!-- left -->
+  <text class="ttl on-r" x="190" y="22" text-anchor="middle">提供者视角：消费者执行业务逻辑</text>
+  <rect class="bx-b" x="20" y="40" width="110" height="200" rx="10"/>
+  <text class="ttl on-b" x="75" y="64" text-anchor="middle">消费者</text>
+  <text class="sm" x="75" y="84" text-anchor="middle">（不受控）</text>
+  <rect class="bx" x="250" y="40" width="110" height="200" rx="10"/>
+  <text class="ttl" x="305" y="64" text-anchor="middle">API</text>
+  <text class="sm" x="305" y="84" text-anchor="middle">只做转发</text>
+
+  <path class="ln-b" d="M130 112 H248" marker-end="url(#ar-b)"/>
+  <text class="sm" x="189" y="104" text-anchor="middle">① 列出地址</text>
+  <path class="ln-b" d="M130 158 H248" marker-end="url(#ar-b)"/>
+  <text class="sm" x="189" y="150" text-anchor="middle">② 把旧地址设为失效</text>
+  <path class="ln-r" d="M130 204 H200" stroke-dasharray="5 4"/>
+  <text class="on-r" x="212" y="209" font-weight="700">&#10007;</text>
+  <text class="sm" x="189" y="196" text-anchor="middle">③ 新增生效地址</text>
+  <text class="sm on-r" x="190" y="262" text-anchor="middle">崩溃 / Bug / 恶意：停在第 ② 步</text>
+  <text class="sm on-r" x="190" y="280" text-anchor="middle">→ 用户没有任何生效地址，数据损坏</text>
+
+  <path class="ln-d" d="M380 20 V280"/>
+
+  <!-- right -->
+  <text class="ttl on-g" x="570" y="22" text-anchor="middle">消费者视角：实现处理业务逻辑</text>
+  <rect class="bx-b" x="400" y="40" width="110" height="200" rx="10"/>
+  <text class="ttl on-b" x="455" y="64" text-anchor="middle">消费者</text>
+  <rect class="bx-g" x="630" y="40" width="110" height="200" rx="10"/>
+  <text class="ttl on-g" x="685" y="64" text-anchor="middle">API + 实现</text>
+  <text class="sm" x="685" y="110" text-anchor="middle">停用旧地址</text>
+  <text class="sm" x="685" y="128" text-anchor="middle">＋</text>
+  <text class="sm" x="685" y="146" text-anchor="middle">写入新地址</text>
+  <text class="sm" x="685" y="170" text-anchor="middle">（在一个事务里）</text>
+  <path class="ln-g" d="M510 136 H628" marker-end="url(#ar-g)"/>
+  <text class="sm" x="569" y="128" text-anchor="middle">更新客户地址</text>
+  <text class="sm on-g" x="570" y="262" text-anchor="middle">消费者只需把新地址发过来</text>
+  <text class="sm on-g" x="570" y="280" text-anchor="middle">一致性由我们控制的代码保证</text>
+</svg>
+<figcaption>图 2-6　如果调错顺序就会破坏数据，说明你把业务逻辑托付给了消费者</figcaption>
+</figure>
+
+<p>代码对比更直观。上半段是「被迫编排三次调用」的客户端，下半段是好设计下的客户端：</p>
+
+<div class="tabs" data-title="客户端：3 次调用 vs 1 次调用">
+<div class="code" data-lang="python">
+<pre>
+import httpx
+
+api = httpx.Client(base_url="https://api.shopp.ing")
+
+# ✗ 提供者视角：消费者必须知道「一个客户只能有一个生效地址」这条内部规则
+def change_address_bad(customer_id: str, new_address: dict) -&gt; None:
+    addresses = api.get(f"/customers/{customer_id}/addresses").json()
+    active = next(a for a in addresses if a["status"] == "active")
+    api.patch(f"/addresses/{active['id']}", json={"status": "inactive"})
+    # 如果程序在这里崩溃，客户就没有生效地址了
+    api.post(f"/customers/{customer_id}/addresses",
+             json={**new_address, "status": "active"})
+
+# ✓ 消费者视角：只表达意图，规则由服务端实现保证
+def change_address_good(customer_id: str, new_address: dict) -&gt; None:
+    api.put(f"/customers/{customer_id}/address", json=new_address)
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const base = "https://api.shopp.ing";
+type Address = { id: string; street: string; city: string; status: "active" | "inactive" };
+const json = { "Content-Type": "application/json" };
+
+// ✗ 提供者视角：消费者必须知道「一个客户只能有一个生效地址」这条内部规则
+async function changeAddressBad(customerId: string, newAddress: Omit&lt;Address, "id" | "status"&gt;) {
+  const addresses: Address[] = await (await fetch(`${base}/customers/${customerId}/addresses`)).json();
+  const active = addresses.find((a) =&gt; a.status === "active")!;
+  await fetch(`${base}/addresses/${active.id}`, {
+    method: "PATCH", headers: json, body: JSON.stringify({ status: "inactive" }),
+  });
+  // 如果页面在这里被关掉，客户就没有生效地址了
+  await fetch(`${base}/customers/${customerId}/addresses`, {
+    method: "POST", headers: json, body: JSON.stringify({ ...newAddress, status: "active" }),
+  });
+}
+
+// ✓ 消费者视角：只表达意图，规则由服务端实现保证
+async function changeAddressGood(customerId: string, newAddress: Omit&lt;Address, "id" | "status"&gt;) {
+  await fetch(`${base}/customers/${customerId}/address`, {
+    method: "PUT", headers: json, body: JSON.stringify(newAddress),
+  });
+}
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 用 Spring 6 的 RestClient 做客户端
+RestClient api = RestClient.create("https://api.shopp.ing");
+
+record Address(String id, String street, String city, String status) {}
+record NewAddress(String street, String city) {}
+
+// ✗ 提供者视角：消费者必须知道「一个客户只能有一个生效地址」这条内部规则
+void changeAddressBad(String customerId, NewAddress newAddress) {
+    Address[] addresses = api.get()
+        .uri("/customers/{id}/addresses", customerId)
+        .retrieve().body(Address[].class);
+    Address active = Arrays.stream(addresses)
+        .filter(a -&gt; a.status().equals("active")).findFirst().orElseThrow();
+
+    api.patch().uri("/addresses/{id}", active.id())
+        .body(Map.of("status", "inactive")).retrieve().toBodilessEntity();
+    // 如果进程在这里崩溃，客户就没有生效地址了
+    api.post().uri("/customers/{id}/addresses", customerId)
+        .body(Map.of("street", newAddress.street(), "city", newAddress.city(), "status", "active"))
+        .retrieve().toBodilessEntity();
+}
+
+// ✓ 消费者视角：只表达意图，规则由服务端实现保证
+void changeAddressGood(String customerId, NewAddress newAddress) {
+    api.put().uri("/customers/{id}/address", customerId)
+        .body(newAddress).retrieve().toBodilessEntity();
+}
+</pre>
+</div>
+</div>
+
+<h3>3. 暴露软件架构</h3>
+
+<p>
+  系统由两个微服务组成：一个管商品信息，一个管价格。如果 API 照搬这个结构，消费者就得先「搜索商品（不含价格）」，
+  再对<strong>每一件</strong>商品调用「获取商品价格」。对购物来说，没有价格的商品毫无意义，所以这个别扭的序列每次都要走一遍，
+  而且有性能问题（第 13 章）。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="暴露微服务架构时消费者需要一加 N 次调用，对比由实现编排微服务时的一次调用">
+  <text class="ttl on-r" x="190" y="22" text-anchor="middle">消费者编排微服务：1 + N 次调用</text>
+  <rect class="bx-b" x="20" y="60" width="96" height="110" rx="10"/>
+  <text class="ttl on-b" x="68" y="120" text-anchor="middle">消费者</text>
+  <rect class="bx" x="250" y="44" width="110" height="52" rx="8"/>
+  <text x="305" y="66" text-anchor="middle">商品服务</text><text class="sm" x="305" y="84" text-anchor="middle">没有价格</text>
+  <rect class="bx" x="250" y="134" width="110" height="52" rx="8"/>
+  <text x="305" y="156" text-anchor="middle">价格服务</text><text class="sm" x="305" y="174" text-anchor="middle">一次查一件</text>
+  <path class="ln-b" d="M116 84 H248" marker-end="url(#ar-b)"/>
+  <text class="sm" x="182" y="76" text-anchor="middle">搜索商品 ×1</text>
+  <path class="ln-r" d="M116 148 H248" marker-end="url(#ar-r)"/>
+  <path class="ln-r" d="M116 160 H248" marker-end="url(#ar-r)"/>
+  <path class="ln-r" d="M116 172 H248" marker-end="url(#ar-r)"/>
+  <text class="sm on-r" x="182" y="140" text-anchor="middle">查价格 ×N</text>
+  <text class="sm" x="190" y="214" text-anchor="middle">消费者自己把商品和价格拼起来</text>
+
+  <path class="ln-d" d="M380 20 V230"/>
+
+  <text class="ttl on-g" x="570" y="22" text-anchor="middle">实现编排微服务：1 次调用</text>
+  <rect class="bx-b" x="400" y="60" width="86" height="110" rx="10"/>
+  <text class="ttl on-b" x="443" y="120" text-anchor="middle">消费者</text>
+  <rect class="bx-g" x="540" y="60" width="80" height="110" rx="10"/>
+  <text class="ttl on-g" x="580" y="112" text-anchor="middle">API</text>
+  <text class="sm" x="580" y="132" text-anchor="middle">实现</text>
+  <rect class="bx" x="660" y="50" width="84" height="44" rx="8"/><text x="702" y="77" text-anchor="middle">商品服务</text>
+  <rect class="bx" x="660" y="136" width="84" height="44" rx="8"/><text x="702" y="163" text-anchor="middle">价格服务</text>
+  <path class="ln-g" d="M486 115 H538" marker-end="url(#ar-g)"/>
+  <path class="ln-d" d="M620 96 L658 78" marker-end="url(#ar)"/>
+  <path class="ln-d" d="M620 134 L658 152" marker-end="url(#ar)"/>
+  <text class="sm" x="570" y="214" text-anchor="middle">「搜索商品」直接返回带价格的商品</text>
+</svg>
+<figcaption>图 2-7　架构可以有充分的理由拆成两个服务，但那不关消费者的事</figcaption>
+</figure>
+
+<div class="box deep">
+  <div class="t">&#128218; 康威定律</div>
+  <p>
+    「设计系统的组织，其产出的设计必然是该组织沟通结构的翻版。」（1968 年）
+    API 同样受此影响：组织怎么划分团队、系统之间怎么交换数据，都会悄悄渗进 API 的形状里。意识到这一点，才能有意识地抵抗它。
+  </p>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th>陷阱</th><th>典型信号</th></tr>
+  <tr><td>照着 UI 画 API</td><td>流程里出现细碎字段；界面流程一改 API 就得改</td></tr>
+  <tr><td>替消费者做业务</td><td>出现与本领域无关或关系很远的逻辑</td></tr>
+  <tr><td>暴露数据组织</td><td>步骤或操作名里出现表名；步骤在描述数据怎么拆分存储</td></tr>
+  <tr><td>暴露业务逻辑</td><td>调错顺序或漏调一步会破坏数据完整性</td></tr>
+  <tr><td>暴露软件架构</td><td>步骤或操作名里出现系统名；取一份数据需要复杂的调用序列</td></tr>
+</table>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>API 能力 = API 要覆盖的用例 + 完成它们所需的操作。</li>
+  <li>用自然语言（「发送一条消息」）而不是接口语言（<code>POST /status</code>）描述能力，便于所有人讨论和确认。</li>
+  <li>列出所有用户及其用例；先走最常见、顺利的主路径，再补备选路径和失败。</li>
+  <li>把用例拆成步骤；追问输入的来源和结果的去向，找出遗漏的步骤、用例、用户。</li>
+  <li>从用户视角列出每步的失败、原因和修复方法；用「如果……怎么办」发现备选分支。</li>
+  <li>借助描述、输入和成功结果找出相似步骤，提炼成唯一、与场景无关的操作。</li>
+  <li>质疑与领域关系很远、或结果没人用的元素；多问「为什么」。</li>
+  <li>不要照搬 UI 流程，不要替某个消费者实现它自己的业务逻辑。</li>
+  <li>不要暴露数据组织、业务逻辑、软件架构。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      你在为一个管理请假的 HR 工具设计 API。列出至少三类用户，选一类优先分析，并说出你会最先分析的用例和理由。
+      <details class="ans"><summary>参考答案</summary>
+        员工、经理、HR 管理员（还可以有薪资系统这类程序用户）。优先分析<strong>员工</strong>：他们人数最多、产生最多用例。
+        最先分析「申请休假」—— 它是整个系统存在的原因，其他用例（审批、统计）都以它的结果为输入。
+      </details>
+    </li>
+    <li>
+      你在为销售团队的 CRM 设计 API。「销售代表」的用例清单是：准备客户会议、跟进销售线索、<em>核查数据同步流程</em>、识别并联系有流失风险的客户、跟踪进行中的交易。哪一条有问题？为什么？
+      <details class="ans"><summary>参考答案</summary>
+        「核查数据同步流程」。它是系统内部运维的事（提供者视角），不是销售代表要达成的业务目标。
+        多问一句「为什么销售需要这个？」—— 很可能背后是「担心看到的客户数据不是最新的」，那可以考虑的是让数据带上「最后更新时间」，或者把这个用例归给另一类用户（系统管理员），并向需求方确认是否在范围内。
+      </details>
+    </li>
+    <li>
+      外卖 API，「顾客」的「下单」用例有三步：搜索餐厅、把菜品加入订单、支付订单。用输入来源和结果去向找出缺失的步骤。
+      <details class="ans"><summary>参考答案</summary>
+        「把菜品加入订单」需要<em>菜品</em>作为输入，它从哪来？「搜索餐厅」的结果是餐厅，不是菜品。
+        所以中间缺了一步「查看餐厅菜单」（列出某家餐厅的菜品）。
+      </details>
+    </li>
+    <li>
+      活动管理 API 的步骤：核实活动是否已存在、创建活动、搜索可订的活动、把门票加入订单、支付订单、把门票加入礼物、确认礼物。请提炼出唯一、通用的操作。
+      <details class="ans"><summary>参考答案</summary>
+        「核实活动是否已存在」和「搜索可订的活动」→ <strong>搜索活动</strong>；「创建活动」→ <strong>创建活动</strong>；
+        「把门票加入订单」和「把门票加入礼物」→ <strong>把门票加入订单</strong>（礼物只是带了收礼人的订单）；
+        「支付订单」和「确认礼物」→ <strong>支付订单</strong>。7 个步骤归并为 4 个操作。
+      </details>
+    </li>
+    <li>把本章三种语言的「透视」脚本挑一个跑起来，再往里加上「管理订单」用例的步骤，看看哪些操作被复用了。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

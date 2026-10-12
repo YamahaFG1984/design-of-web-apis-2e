@@ -1,0 +1,1040 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 18 章 · 把设计指南自动化 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="18">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 18 章</span>
+<h1>把设计指南自动化</h1>
+<p class="lede">
+  指南说属性名要用驼峰式。可手一滑就把 <code>account</code> 写成了 <code>Account</code>；缩写该写 <code>sourceIBAN</code> 还是 <code>sourceIban</code> 也总拿不准；
+  搜索操作忘了加分页；分页参数到底叫 <code>cursor</code> 还是 <code>next</code>？
+  靠人脑记住所有规则既累又慢。程序员早就有解决办法：<strong>lint</strong>。这一章用 Spectral 给 OpenAPI 文档做 lint，把指南变成自动检查。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解 API linting 是什么、它和设计指南的关系</li>
+    <li>会用 Spectral CLI，并看懂一条规则的 <code>given</code> / <code>then</code> 结构</li>
+    <li>会决定一条规则该检查什么、粒度多大</li>
+    <li>会用 JSONPath 和别名定位 OpenAPI 文档里的元素</li>
+    <li>会做五类典型检查：值与键、存在、不存在、引用、部分 schema，以及用自定义函数做跨元素检查</li>
+    <li>会用严重级别和消息给出有帮助的反馈</li>
+    <li>会组织、共享规则集，并在具体的 API 上调整和忽略</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="what">API linting 是什么</h2>
+
+<p>
+  <strong>Linter</strong> 是分析源代码、找出错误和风格问题的程序。<strong>API linting</strong> 把同样的做法用在 API 的定义上 —— 也就是 OpenAPI 文档。
+  它可以在 IDE 里边写边查，可以在终端里跑，也可以接进 CI/CD 流水线；而且不关心文档是手写的还是从代码生成的。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="IDE 中的 API linter 在 OpenAPI 文件里标出设计问题和 OpenAPI 写法问题">
+  <rect class="bx" x="20" y="20" width="720" height="250" rx="12"/>
+  <rect class="bx" x="20" y="20" width="720" height="28" rx="12"/>
+  <text class="mono sm" x="36" y="39">api.openapi.yaml</text>
+
+  <text class="mono sm" x="36" y="68"><tspan style="fill:var(--fg-faint)">20</tspan>  paths:</text>
+  <text class="mono sm" x="36" y="84"><tspan style="fill:var(--fg-faint)">21</tspan>    /products:</text>
+  <text class="mono sm on-r" x="36" y="100"><tspan style="fill:var(--fg-faint)">22</tspan>      get: …</text>
+  <text class="mono sm" x="36" y="116"><tspan style="fill:var(--fg-faint)">42</tspan>      post:</text>
+  <text class="mono sm on-b" x="36" y="132"><tspan style="fill:var(--fg-faint)">43</tspan>        requestBody: … schema: type: object</text>
+  <text class="mono sm on-r" x="36" y="148"><tspan style="fill:var(--fg-faint)">46</tspan>          product_reference: …</text>
+  <text class="mono sm" x="36" y="164"><tspan style="fill:var(--fg-faint)">79</tspan>    /products/{productId}:</text>
+  <text class="mono sm on-b" x="36" y="180"><tspan style="fill:var(--fg-faint)">80</tspan>      get: parameters: - name: productId</text>
+  <text class="mono sm on-r" x="36" y="196"><tspan style="fill:var(--fg-faint)">99</tspan>      delete: …</text>
+
+  <path class="ln-d" d="M400 54 V262"/>
+  <text class="ttl" x="416" y="70">问题（5）</text>
+  <text class="sm on-r" x="416" y="94">L22　缺少 limit 和 next 分页参数</text>
+  <text class="sm on-b" x="416" y="116">L43　请求体用了内联 schema 而不是引用</text>
+  <text class="sm on-r" x="416" y="138">L46　属性 product_reference 不是驼峰式</text>
+  <text class="sm on-b" x="416" y="160">L80　路径参数 productId 没有定义在路径级</text>
+  <text class="sm on-r" x="416" y="182">L99　没有定义安全作用域</text>
+  <rect class="bx-r" x="416" y="210" width="12" height="12" rx="2"/><text class="sm" x="436" y="221">设计问题：一致性、好用性、效率、安全</text>
+  <rect class="bx-b" x="416" y="232" width="12" height="12" rx="2"/><text class="sm" x="436" y="243">OpenAPI 写法问题：文档的清晰与可维护</text>
+</svg>
+<figcaption>图 18-1　和 IDE 标出 Python 或 Java 代码里的问题一样</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#9733; Linting 是指南的自动化，而不是指南的替代</div>
+  <p>
+    没有指南的 linting，就像没分析需求就开始写 <code>GET /products</code>：指南提供的是经过论证的理由（第 16 章），没有它，lint 规则很容易变成无关、繁琐甚至错误的约束，反而导致糟糕的设计。
+    反过来，指南也应该配上 linting：它替你盯着细节（大小写、安全、模式的套用），让你不必反复翻指南，把精力留给它<strong>做不到</strong>的事 —— 判断设计是否真的满足了用户需求。
+  </p>
+</div>
+
+<p>
+  Linting 在设计和开发阶段尤其有价值：它能在上线<strong>之前</strong>拦住那些本可避免的错误 —— 等上线后再去改一个属性名的大小写，就是破坏性修改了（第 15 章）。
+</p>
+
+<h3>对 linter 的要求</h3>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">开发规则时</div>
+    <ul style="padding:10px 14px 10px 32px;margin:0;font-size:14.5px">
+      <li>能自动化指南的大部分内容</li>
+      <li>能自定义检查、复用配置</li>
+      <li>能返回有助于解决问题的反馈</li>
+      <li>能把规则分组组织</li>
+    </ul>
+  </div>
+  <div class="new">
+    <div class="h">使用规则时</div>
+    <ul style="padding:10px 14px 10px 32px;margin:0;font-size:14.5px">
+      <li>能从一个集中的地方共享规则</li>
+      <li>能针对某个 API 调整共享的规则</li>
+      <li>能添加某个 API 特有的规则</li>
+      <li>能忽略特定的问题</li>
+    </ul>
+  </div>
+</div>
+
+<p>
+  本章使用 <a href="https://github.com/stoplightio/spectral">Spectral</a>：开源、强大、灵活、应用广泛，并且满足上面所有要求。
+  工具在不断演进（尤其是结合 AI 之后），换用别的 linter 时，拿这八条去衡量即可。Linting 也不限于 OpenAPI：Spectral 还能检查 AsyncAPI，gRPC 和 GraphQL 也各有自己的 linter。
+</p>
+
+<h2 id="spectral">Spectral 入门</h2>
+
+<h3>安装与运行</h3>
+
+<div class="code" data-lang="bash">
+<pre>
+# 全局安装
+npm install -g @stoplight/spectral-cli
+
+# 用 rules.spectral.yaml 里的规则检查 api.openapi.yaml
+spectral lint api.openapi.yaml -r rules.spectral.yaml
+
+# 本仓库第 18 章的目录里已经配好了：先 npm install，再按小节编号运行示例
+cd "18. Automating API design guidelines"
+npm install
+npm run 18.3.2
+</pre>
+</div>
+
+<h3>一条规则怎样工作</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="Spectral 规则的三个步骤：用 given 定位元素，用 then 检查值，对没通过的输出问题">
+  <rect class="bx" x="20" y="20" width="220" height="170" rx="10"/>
+  <text class="ttl" x="36" y="42">api.openapi.yaml</text>
+  <text class="mono sm" x="36" y="64">paths:</text>
+  <text class="mono sm" x="36" y="80">  /products:</text>
+  <text class="mono sm" x="36" y="96">    get:</text>
+  <text class="mono sm" x="36" y="112">      parameters:</text>
+  <text class="mono sm on-r" x="36" y="128" font-weight="700">        - name: buyPRice</text>
+  <text class="mono sm" x="36" y="144">          in: query</text>
+  <text class="sm" x="36" y="174">应该是 buyPrice</text>
+
+  <rect class="bx-a" x="270" y="20" width="470" height="170" rx="10"/>
+  <text class="ttl on-a" x="286" y="42">rules.spectral.yaml</text>
+  <text class="mono sm" x="286" y="64">rules:</text>
+  <text class="mono sm" x="286" y="80">  query-name-camel:</text>
+  <text class="mono sm on-b" x="286" y="98" font-weight="700">    given:</text>
+  <text class="mono sm on-b" x="286" y="114">      - $..parameters[?(@.in === "query")].name</text>
+  <text class="mono sm on-g" x="286" y="132" font-weight="700">    then:</text>
+  <text class="mono sm on-g" x="286" y="148">      - function: casing</text>
+  <text class="mono sm on-g" x="286" y="164">        functionOptions: { type: camel }</text>
+  <text class="sm on-b" x="724" y="98" text-anchor="end">① 定位：用 JSONPath 找到要检查的元素</text>
+  <text class="sm on-g" x="724" y="132" text-anchor="end">② 检查：用函数验证找到的每个值</text>
+
+  <path class="ln-b" d="M286 120 C260 126 250 128 232 126" marker-end="url(#ar-b)"/>
+
+  <rect class="bx" x="20" y="214" width="720" height="96" rx="10"/>
+  <text class="mono sm" x="36" y="236">&gt; spectral lint api.openapi.yaml -r rules.spectral.yaml</text>
+  <text class="mono sm" x="36" y="260"><tspan class="on-p">13:18</tspan>  <tspan class="on-a">warn</tspan>  <tspan class="on-b">query-name-camel</tspan>  must be camel case  <tspan style="fill:var(--fg-faint)">paths./products.get.parameters[0].name</tspan></text>
+  <text class="mono sm" x="36" y="284">✖ 1 problem (0 errors, 1 warning, 0 infos, 0 hints)</text>
+  <text class="sm" x="36" y="302"><tspan class="on-p">行:列</tspan>　<tspan class="on-a">严重级别</tspan>　<tspan class="on-b">规则名</tspan>　问题描述　问题所在的路径　　③ 反馈：每个没通过检查的值输出一个「问题」</text>
+</svg>
+<figcaption>图 18-2　定位（given）→ 检查（then）→ 反馈。之后开发每条规则也按这三步走</figcaption>
+</figure>
+
+<p>
+  <strong>规则集（ruleset）</strong>是一个 YAML 文件，<code>rules</code> 下的每个键是一条规则的名字。
+  <code>given</code> 里的 <strong>JSONPath</strong> 是一种在 JSON/YAML 文档里选取值的标准写法（RFC 9535）；<code>then</code> 里调用的是 Spectral 自带的或你自己写的<strong>函数</strong>。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 几个实用提示</div>
+  <ul>
+    <li>在 IDE 的终端里运行 Spectral，输出里的位置可以点击，直接跳到 OpenAPI 文件的对应行。</li>
+    <li><code>spectral lint --help</code> 查看全部选项；<code>-f json</code> 或 <code>-f junit</code> 可以改变输出格式，方便接入 CI/CD。</li>
+    <li>VS Code 等编辑器有 Spectral 扩展：编辑规则集时有提示，编辑 OpenAPI 文件时实时 lint。</li>
+    <li>规则集也可以用 JSON、JavaScript 或 TypeScript 写，但 YAML 最容易维护，和各种支持 Spectral 的工具也最兼容。</li>
+  </ul>
+</div>
+
+<h2 id="decide">决定规则检查什么</h2>
+
+<p>不留神的话，你会造出强制执行不必要甚至错误模式的规则，或者一条规则检查太多东西、反馈让人无从下手。四条原则：</p>
+
+<h3>① 只创建指南需要的规则</h3>
+<p>
+  每条规则都要有出处。用 <code>documentationUrl</code> 指向指南里的对应章节：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+rules:
+  resource-name-plural:
+    documentationUrl: https://guidelines.intra/principles#resource-names
+    description: Resource names must be plural
+</pre>
+</div>
+
+<p>
+  如果你想加一条 <code>resource-id-number</code>（「资源 ID 必须是数字」）却在指南里找不到依据，要么先去扩充指南并说明这条规则的价值（第 16 章），要么 —— 更可能 —— 在调研之后发现根本不需要它。
+</p>
+
+<h3>② 把需求切成小块</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="规则粒度的三个层次：整个指南一条规则太粗，一个配方一条规则也太粗，应基于更小的陈述创建多条规则">
+  <rect class="bx-r" x="20" y="20" width="220" height="190" rx="12"/>
+  <text class="ttl on-r" x="130" y="44" text-anchor="middle">&#10007; 一条规则管整个指南</text>
+  <text class="mono sm" x="36" y="74">rules:</text>
+  <text class="mono sm" x="36" y="90">  api-guidelines: …</text>
+  <text class="sm" x="130" y="150" text-anchor="middle">实现起来是噩梦</text>
+  <text class="sm" x="130" y="168" text-anchor="middle">反馈毫无意义</text>
+
+  <rect class="bx-r" x="270" y="20" width="220" height="190" rx="12"/>
+  <text class="ttl on-r" x="380" y="44" text-anchor="middle">&#10007; 一条规则管一份配方</text>
+  <text class="mono sm" x="286" y="74">rules:</text>
+  <text class="mono sm" x="286" y="90">  search-operation: …</text>
+  <text class="sm" x="380" y="132" text-anchor="middle">要同时检查分页、排序、筛选、</text>
+  <text class="sm" x="380" y="150" text-anchor="middle">成功和错误响应、元数据……</text>
+  <text class="sm" x="380" y="168" text-anchor="middle">而它们的严重程度并不相同</text>
+  <text class="sm" x="380" y="186" text-anchor="middle">（分页必需，筛选可选）</text>
+
+  <rect class="bx-g" x="520" y="20" width="220" height="190" rx="12"/>
+  <text class="ttl on-g" x="630" y="44" text-anchor="middle">&#10003; 基于更小的陈述</text>
+  <text class="mono sm" x="536" y="74">rules:</text>
+  <text class="mono sm" x="536" y="90">  no-required-query: …</text>
+  <text class="mono sm" x="536" y="106">  pagination-limit-defined: …</text>
+  <text class="mono sm" x="536" y="122">  pagination-limit-schema: …</text>
+  <text class="mono sm" x="536" y="138">  pagination-next-defined: …</text>
+  <text class="mono sm" x="536" y="154">  pagination-next-schema: …</text>
+  <text class="sm" x="630" y="186" text-anchor="middle">组合起来覆盖整份配方</text>
+</svg>
+<figcaption>图 18-3　规则应该对应配方里的一句话，而不是整份配方</figcaption>
+</figure>
+
+<h3>③ 用共享组件简化规则</h3>
+<p>
+  在把指南切碎之前，先想想能不能往 OpenAPI 组件库（第 17 章）里加一个共享组件。
+  与其写一堆复杂的规则去检查 <code>500</code> 响应的媒体类型、描述和 schema，不如在库里定义一个标准的 <code>500</code> 响应，然后只用<strong>一条规则</strong>检查「每个 <code>500</code> 都引用了它」。
+  文档更好写、更一致，lint 报的问题更少，修起来也更容易。
+</p>
+
+<h3>④ 用简洁的名字和描述检验粒度</h3>
+
+<div class="tw">
+<table>
+  <tr><th>规则名与描述</th><th>评价</th></tr>
+  <tr><td><code>api-guidelines</code><br>「API 必须遵守我们的设计指南」</td><td><span class="tag-r">&#10007;</span> 简洁，但什么也没说</td></tr>
+  <tr><td><code>search-operation-pagination-filters-success-error</code><br>「搜索操作必须有可选的 next 和 size 分页参数、可选的筛选参数、一个 schema 为……的 200 响应……」</td><td><span class="tag-r">&#10007;</span> 说得很清楚，但明显在用一条规则做太多检查</td></tr>
+  <tr><td><code>standard-pagination-parameters</code><br>「搜索操作的分页参数必须用 <code>$ref: …#/components/parameters/Pagination</code> 定义」</td><td><span class="tag-g">&#10003;</span> 只解决一个小问题（而且巧妙地借助了共享组件）</td></tr>
+</table>
+</div>
+
+<p>如果名字和描述说不清规则在检查什么，或者又长又罗列了许多检查，粒度就不对。</p>
+
+<h2 id="target">定位：找到要检查的元素</h2>
+
+<h3>先确认找对了</h3>
+
+<p>
+  开发一条新规则时，先用一个临时的 <code>then</code> 调用 <code>undefined</code> 函数（它断言「这个值不应该存在」，于是凡是找到的元素都会被报出来），在一份测试文档上跑一下，就能看到 <code>given</code> 到底选中了什么：
+</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：18.5.1. …/rules.spectral.yaml">
+<pre>
+rules:
+  semantic-version:
+    documentationUrl: https://guidelines.intra/principles#versioning
+    description: API must use semantic version (like 1.1)
+    given:
+      - $.info.version          # 文档根（$）下 info 对象的 version 属性
+    then:
+      - function: undefined     # 临时的：只为了看 given 找到了什么
+</pre>
+</div>
+
+<div class="code" data-lang="text">
+<pre>
+4:12  warning  semantic-version  "version" property must be undefined  info.version
+</pre>
+</div>
+
+<p>位置是 <code>info.version</code> —— 正是我们想要的。测试文档要真实、语法正确，既包含想命中的元素，也包含想排除的元素。</p>
+
+<h3>JSONPath 速查</h3>
+
+<div class="tw">
+<table>
+  <tr><th>写法</th><th>含义</th><th>例子</th></tr>
+  <tr><td><code>$</code></td><td>文档的根</td><td><code>$.info.version</code></td></tr>
+  <tr><td><code>a.b</code></td><td><code>a</code> 的 <code>b</code></td><td><code>$.paths</code></td></tr>
+  <tr><td><code>a.*</code></td><td><code>a</code> 对象的所有值，或 <code>a</code> 数组的所有项</td><td><code>$.paths.*</code> → 所有路径对象</td></tr>
+  <tr><td><code>[a,b]</code></td><td>键为 <code>a</code> 或 <code>b</code> 的元素</td><td><code>$.paths.*[post,put]</code> → 所有 post 和 put 操作</td></tr>
+  <tr><td><code>..b</code></td><td>遍历整个文档，找出所有的 <code>b</code></td><td><code>$..parameters</code> → 路径级、操作级和可复用的参数列表</td></tr>
+  <tr><td><code>[?(条件)]</code></td><td>满足条件的元素；<code>@</code> 代表当前元素，条件的写法类似 JavaScript</td><td><code>$..parameters[?(@.in === "query" || @.in === "path")]</code></td></tr>
+  <tr><td><code>@property</code></td><td>条件里表示当前元素的<strong>键</strong></td><td><code>$.paths[?(@property.match(/}$/))]</code> → 以 <code>}</code> 结尾的路径</td></tr>
+  <tr><td><code>a^</code></td><td><code>a</code> 的父元素</td><td><code>$..properties^</code> → 所有定义了 <code>properties</code> 的 schema</td></tr>
+</table>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 两点提醒</div>
+  <ul>
+    <li>Spectral 用的是 JSONPath Plus 这个实现，比标准多一些功能（如 <code>^</code> 和 <code>@property</code>）。写 <code>given</code> 时参考<a href="https://github.com/JSONPath-Plus/JSONPath">它的文档</a>。</li>
+    <li>为了清晰和准确，宁可写几条简单的路径，也不要写一条复杂的。<code>..b</code> 可能会意外抓到 schema 里碰巧叫 <code>b</code> 的属性 —— 在 <code>..</code> 后面多加几层来避免（<code>$..b.c</code>）。</li>
+  </ul>
+</div>
+
+<h3>引用：解析后的文档 vs 原始文档</h3>
+
+<p>
+  OpenAPI 文档里的元素可能是内联定义的，也可能藏在 <code>$ref</code> 后面（甚至在另一个文件里）。
+  好消息是：<strong>默认情况下，Spectral 的规则运行在「解析后」的文档上</strong> —— 所有 <code>$ref</code> 都已经被替换成它们指向的内容，你不用操心。
+  想检查 <code>$ref</code> 本身时，把规则的 <code>resolved</code> 设为 <code>false</code>：
+</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：18.5.3. …/rules.spectral.yaml">
+<pre>
+rules:
+  resolved-path-level-parameters:          # resolved 默认是 true
+    given:
+      - $.paths.*.parameters.*.name        # 即使参数是用 $ref 定义的，也能拿到 accountId
+    then:
+      function: undefined
+
+  unresolved-path-level-parameters:
+    resolved: false                        # 在原始文档上运行
+    given:
+      - $.paths.*.parameters.*.$ref        # 拿到 "#/components/parameters/AccountId"
+    then:
+      function: undefined
+</pre>
+</div>
+
+<h3>别名：可复用的路径</h3>
+
+<p>
+  很多规则要定位同样的东西 ——「所有参数」「搜索操作」。把这些 JSONPath 定义成<strong>别名（alias）</strong>，既避免重复和出错，也让规则更易读：
+</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：18.5.4. …/rules.spectral.yaml">
+<pre>
+aliases:
+  # 按我们的指南：集合资源的路径不以 {路径参数} 结尾，单个资源的路径以它结尾
+  CollectionResources:
+    - $.paths[?(!@property.match(/}$/))]
+  UnitResources:
+    - $.paths[?(@property.match(/}$/))]
+
+  # 资源类型 + HTTP 方法 = 典型操作
+  SearchOperations:
+    - "#CollectionResources.get"          # 扩展别名：在后面接相对的 JSONPath
+  ReadOperations:
+    - "#UnitResources.get"
+
+  AllParameters:
+    - $.paths.*.parameters.*              # 路径级
+    - $.paths.*.*.parameters.*            # 操作级
+    - $.components.parameters.*           # 可复用的
+  AllQueryParameters:
+    - "#AllParameters[?(@.in === 'query')]"
+  AllPathParameters:
+    - "#AllParameters[?(@.in === 'path')]"
+
+rules:
+  parameters-path-query-camel-case:
+    given:
+      - "#AllQueryParameters.name"        # 要加引号，否则 # 会被当成 YAML 注释
+      - "#AllPathParameters.name"
+    then:
+      function: casing
+      functionOptions:
+        type: camel
+</pre>
+</div>
+
+<h2 id="check">检查：验证元素的值</h2>
+
+<h3>① 值和键的基本检查</h3>
+
+<div class="code" data-lang="yaml" data-file="仓库：18.6.1. …/rules.spectral.yaml">
+<pre>
+rules:
+  path-parameter-names:
+    given:
+      - "#AllPathParameters.name"
+    then:                             # 可以有多个检查
+      - function: casing              # 核心函数：检查大小写风格
+        functionOptions:
+          type: camel
+      - function: pattern             # 核心函数：检查是否匹配正则
+        functionOptions:
+          match: /Id$/                # 路径参数的名字必须以 Id 结尾
+
+  query-parameters-optional:
+    given:
+      - "#AllQueryParameters"
+    then:
+      - field: required               # field：检查找到的元素的某个子属性
+        function: falsy               # 必须为假（false、未定义……）→ 查询参数不能是必填的
+
+  property-names:
+    given:
+      - $..[schema,schemas]..properties
+    then:
+      - field: "@key"                 # 特殊的 field：检查对象的每个「键」
+        function: casing
+        functionOptions:
+          type: camel
+</pre>
+</div>
+
+<p>常用的<a href="https://github.com/stoplightio/spectral/blob/develop/docs/reference/functions.md">核心函数</a>：</p>
+
+<div class="tw">
+<table>
+  <tr><th>函数</th><th>作用</th></tr>
+  <tr><td><code>casing</code></td><td>大小写风格（<code>camel</code>、<code>snake</code>、<code>kebab</code>、<code>pascal</code>……）</td></tr>
+  <tr><td><code>pattern</code></td><td>匹配（<code>match</code>）或不匹配（<code>notMatch</code>）正则表达式</td></tr>
+  <tr><td><code>truthy</code> / <code>falsy</code></td><td>值为真 / 为假</td></tr>
+  <tr><td><code>defined</code> / <code>undefined</code></td><td>存在 / 不存在</td></tr>
+  <tr><td><code>schema</code></td><td>值符合给定的 JSON Schema —— 最万能的一个</td></tr>
+  <tr><td><code>enumeration</code>、<code>length</code>、<code>alphabetical</code>、<code>xor</code>……</td><td>取值范围、长度、排序、互斥……</td></tr>
+</table>
+</div>
+
+<h3>② 确保某个元素存在</h3>
+
+<p><strong>对象里的键</strong>：用 <code>field</code> + <code>defined</code>。</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+  error-500-defined:
+    given:
+      - $.paths.*.*.responses         # 定位到 responses 对象（它一定存在）
+    then:
+      field: "500"                    # 再检查它有没有 "500" 这个键
+      function: defined
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 不能直接定位那个可能不存在的东西</div>
+  <p>如果把 <code>given</code> 写成 <code>$.paths.*.*.responses.500</code>，那么没有定义 <code>500</code> 的操作根本不会被选中，<code>then</code> 也就不会执行 —— 规则永远不报错。要定位它的<strong>父元素</strong>，再用 <code>field</code> 检查。</p>
+</div>
+
+<p><strong>数组里的项</strong>：用 <code>field</code> + <code>schema</code> 函数，配合 JSON Schema 的 <code>contains</code>（数组里至少有一项符合）和 <code>const</code>（等于这个值）。</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：18.6.2. …/rules.spectral.yaml">
+<pre>
+  correlation-id-defined:             # 每条路径都要有 Correlation-Id 请求头
+    given:
+      - $.paths.*
+    then:
+      - field: parameters             # 路径级参数列表不存在时也能发现
+        function: schema
+        functionOptions:
+          schema:
+            type: array
+            contains:                 # 数组里要有一项……
+              properties:
+                in:
+                  const: header       # ……in 等于 header
+                name:
+                  const: Correlation-Id    # ……name 等于 Correlation-Id
+</pre>
+</div>
+
+<h3>③ 确保某个元素不存在</h3>
+
+<p>直接定位不该出现的东西，用 <code>undefined</code>：</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：18.6.3. …/rules.spectral.yaml">
+<pre>
+  no-404-without-path-parameter:
+    description: Operations on a path without path parameters must not have a 404
+    given:
+      - $.paths[?(!@property.match(/{/))].*.responses.404
+    then:
+      function: undefined
+
+  no-operation-level-correlation-id:
+    given:
+      - $.paths.*.*.parameters[?(@.name === "Correlation-Id")]
+    then:
+      function: undefined
+</pre>
+</div>
+
+<h3>④ 检查引用</h3>
+
+<p>确保用了组件库里的标准组件，或者用了引用而不是内联定义。记得 <code>resolved: false</code>：</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：18.6.4. …/rules.spectral.yaml">
+<pre>
+  500-defined-and-with-shared-component:
+    resolved: false
+    given:
+      - $.paths.*.*.responses
+    then:
+      - field: "500"                  # 必须存在，而且必须正好是这个引用
+        function: schema
+        functionOptions:
+          schema:
+            const:
+              $ref: "./library.openapi.yaml#/components/responses/Error500"
+
+  shared-correlation-id:
+    resolved: false
+    given:
+      - $.paths.*
+    then:
+      - field: parameters
+        function: schema
+        functionOptions:
+          schema:
+            type: array
+            contains:
+              const:
+                $ref: "./library.openapi.yaml#/components/parameters/CorrelationId"
+
+  response-schema-ref:                # 响应体的 schema 必须是引用，不能内联
+    resolved: false
+    given:
+      - $.paths.*.*.responses.*.content.application/json.schema
+    then:
+      - field: $ref
+        function: defined
+</pre>
+</div>
+
+<h3>⑤ 检查 schema 的一部分</h3>
+
+<p>
+  指南规定：搜索操作的响应必须是一个对象，里面有一个 <code>data</code> 数组，数组的元素是对象 —— 至于元素具体长什么样，各个操作不同，不关心。
+  这时不能用 <code>const</code> 去比对整个 schema，而要写一个<strong>「JSON Schema 的 JSON Schema」</strong>：
+</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：18.6.5. …/rules.spectral.yaml">
+<pre>
+  list-response:
+    # 搜索操作的所有成功响应的 schema
+    given: "#SearchOperations.responses[?(@property.match(/^2/))].content.application/json.schema"
+    then:
+      function: schema
+      functionOptions:
+        schema:                       # ↓ 这是在描述「被检查的那个 schema 应该长什么样」
+          type: object
+          required: [required, properties]
+          properties:
+            required:                 # 被检查的 schema 的 required 必须是 [data]
+              type: array
+              const: [data]
+            properties:               # 被检查的 schema 的 properties……
+              type: object
+              properties:
+                data:                 # ……必须有 data
+                  required: [type, items]
+                  properties:
+                    type:
+                      const: array    # ……data 的 type 是 array
+                    items:
+                      required: [properties]     # ……元素是带 properties 的对象
+                      properties:
+                        properties:
+                          type: object
+</pre>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 脑子要转个弯</div>
+  <p>被检查的值本身就是一个 JSON Schema，所以 <code>properties</code> 这个词会出现两层含义：外层的 <code>properties</code> 是「我这个校验用的 schema 的属性」，内层名为 <code>properties</code> 的键是「被检查的那个 schema 里叫 properties 的属性」。<code>schema</code> 函数的校验反馈可能不太好懂，下一节讲怎么让它变友好。</p>
+</div>
+
+<h3>⑥ 跨元素检查：自定义函数</h3>
+
+<p>
+  有些检查要比较文档里两个不同位置的东西：创建操作的请求和响应是否用了同一个读写合一的 schema（第 17 章）？搜索的筛选参数是否对应返回模型里的属性？
+  核心函数做不到，要写<strong>自定义函数</strong>。Spectral 的自定义函数用 JavaScript 写，放在规则集旁边的 <code>functions/</code> 目录里：
+</p>
+
+<div class="code" data-lang="yaml" data-file="rules.spectral.yaml（仓库：18.6.6. …）">
+<pre>
+functions:
+  - consistentReferences          # 对应 ./functions/consistentReferences.js（文件名，不是函数名）
+
+rules:
+  consistent-rw-reference:
+    resolved: false
+    given:
+      - $.paths.*[post,put]
+    then:
+      - function: consistentReferences      # 和核心函数一样使用
+</pre>
+</div>
+
+<div class="code" data-lang="js" data-file="functions/consistentReferences.js（节选）">
+<pre>
+/**
+ * @param input   given 找到的一个值（这里是一个操作对象）
+ * @param options then 里的 functionOptions
+ * @param context 上下文：input 在文档中的位置（context.path）、整个文档等
+ * @returns 问题列表；没有问题就返回空数组
+ */
+function compareReferences(input, options, context) {
+  const problems = [];
+
+  const requestRef = input.requestBody.content["application/json"].schema["$ref"];
+
+  const successStatus = Object.keys(input.responses).find((k) =&gt; k.match(/^2/));
+  const responseRef = input.responses[successStatus].content["application/json"].schema["$ref"];
+
+  if (requestRef !== responseRef) {
+    // 报两个问题：一个指向请求，一个指向响应
+    problems.push({
+      message: "Request schema must match response schema",
+      path: [...context.path, "requestBody", "content", "application/json", "schema", "$ref"],
+    });
+    problems.push({
+      message: "Response schema must match request schema",
+      path: [...context.path, "responses", successStatus, "content", "application/json", "schema", "$ref"],
+    });
+  }
+  return problems;
+}
+
+export default compareReferences;     // 必须是默认导出
+</pre>
+</div>
+
+<p>
+  每个问题有一个 <code>message</code> 和一个可选的 <code>path</code>（不给就用 <code>input</code> 自己的位置）。仓库里的完整版本还用 <code>createRulesetFunction</code> 声明了输入和选项的 schema，并支持一个 <code>requestSuffix</code> 选项。
+</p>
+
+<h2 id="feedback">反馈：让问题容易被解决</h2>
+
+<p>规则查出问题后，输出要让人看得懂、改得了。它应该说明：<strong>是什么问题、全部的问题、在哪里、多重要、怎么修。</strong>前三样 Spectral 已经做了（同一个问题即使来自被多处引用的组件，也只报一次），我们要管的是后两样。</p>
+
+<h3>严重级别</h3>
+
+<p><code>severity</code> 有四个取值。怎么解读由你定；下面是作者的建议，对应指南里的 MUST / SHOULD / MAY：</p>
+
+<div class="tw">
+<table>
+  <tr><th><code>severity</code></th><th>含义</th><th>例子</th></tr>
+  <tr><td><span class="tag-r">error</span></td><td><strong>必须</strong>修</td><td>属性名不是驼峰式；没有定义安全作用域</td></tr>
+  <tr><td><span class="tag-a">warn</span>（默认）</td><td>如果确实是问题，<strong>应该</strong>修</td><td><code>POST</code> 的请求体没有任何必填属性 —— 很少见，多半是漏了</td></tr>
+  <tr><td><span class="tag-b">info</span></td><td>可选的改进</td><td>搜索操作可以加上筛选条件</td></tr>
+  <tr><td><span class="tag-p">hint</span></td><td>需要进一步调查</td><td>用了表示文件上传的媒体类型 —— 请做影响分析</td></tr>
+</table>
+</div>
+
+<p><strong>建议总是显式写出 <code>severity</code></strong>：这会逼你思考这条规则要查的问题到底有多重要。</p>
+
+<h3>有助于解决问题的消息</h3>
+
+<p>消息的来源有三个，优先级从高到低：规则的 <code>message</code> → 规则的 <code>description</code> → 函数返回的消息。<code>message</code> 里可以用占位符：</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：18.7.2. …/rules.spectral.yaml">
+<pre>
+rules:
+  property-name-camel:
+    description: Property names must be camelCased
+    documentationUrl: https://guidelines.intra/principles#naming
+    severity: error
+    message: "{{property}} must be camelCased"      # 用了占位符必须加引号
+    given:
+      - $..[schema,schemas]..properties
+    then:
+      field: "@key"
+      function: casing
+      functionOptions:
+        type: camel
+
+  204-no-body:
+    severity: error
+    message: Remove the response body (content) or change status (200, 201)
+    given:
+      - $.paths.*.*.responses.204.content
+    then:
+      function: undefined
+</pre>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th>占位符</th><th>替换成</th></tr>
+  <tr><td><code>{{property}}</code></td><td>问题路径的最后一段（如属性名 <code>buyPRice</code>）</td></tr>
+  <tr><td><code>{{path}}</code></td><td>问题的完整路径</td></tr>
+  <tr><td><code>{{value}}</code></td><td>找到的值</td></tr>
+  <tr><td><code>{{description}}</code></td><td>规则的描述</td></tr>
+  <tr><td><code>{{error}}</code></td><td>函数返回的消息</td></tr>
+</table>
+</div>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">函数默认的消息</div>
+    <p style="padding:10px 14px;margin:0;font-size:14.5px">
+      <code>must be camel case</code> —— 读的人可能不知道 camel case 是什么。<br><br>
+      <code>"content" property must be undefined</code> —— 所以呢？
+    </p>
+  </div>
+  <div class="new">
+    <div class="h">自定义的消息</div>
+    <p style="padding:10px 14px;margin:0;font-size:14.5px">
+      <code>buyPRice must be camelCased</code> —— 指明了是谁，还示范了什么是驼峰式。<br><br>
+      <code>Remove the response body (content) or change status (200, 201)</code> —— 给出了两种修法。
+    </p>
+  </div>
+</div>
+
+<p>这正是第 9 章讲的错误处理原则：反馈要能指导修复。</p>
+
+<h3>因为严重级别或消息而拆分规则</h3>
+<ul>
+  <li>
+    <strong>缺失和写错的严重程度不同。</strong>指南说搜索操作<em>可以</em>有一个字符串类型的 <code>q</code> 参数。
+    那就需要两条规则：<code>search-q-defined</code>（<code>info</code>：没定义，建议加上）和 <code>search-q-valid</code>（<code>error</code>：定义了但类型不对）。
+  </li>
+  <li>
+    <strong>一条消息说不清多个检查。</strong>Spectral 不支持为每个 <code>then</code> 单独定制消息。如果一条规则做了好几种检查导致消息含糊，就把它拆开。这往往也说明规则的粒度本来就不对。
+  </li>
+</ul>
+
+<h2 id="organize">组织与使用规则</h2>
+
+<h3>把规则分成多个规则集</h3>
+
+<p>规则多了以后，按主题拆成小的规则集，再用一个主规则集通过 <code>extends</code> 把它们汇总：</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：18.8. Organizing rules/">
+<pre>
+# ---------- errors.spectral.yaml ----------
+description: Error handling
+documentationUrl: https://guidelines.intra/errors
+rules:
+  error-500-defined:
+    severity: error
+    message: Operation misses a 500 response
+    given:
+      - $.paths.*.*.responses
+    then:
+      field: "500"
+      function: defined
+
+# ---------- openapi.spectral.yaml ----------
+extends:
+  - [spectral:oas, off]            # 导入 Spectral 内建的 OpenAPI 规则，但全部先关掉
+rules:
+  oas3-schema: true                # 只开启需要的：OpenAPI 文档的语法必须合法
+  path-keys-no-trailing-slash: error     # 开启并覆盖其严重级别：路径不能以 / 结尾
+
+# ---------- guidelines.spectral.yaml（主规则集）----------
+extends:
+  - ./errors.spectral.yaml         # 相对路径、绝对路径或 URL 都可以
+  - ./search.spectral.yaml
+  - ./openapi.spectral.yaml
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 把规则集放进代码仓库并打版本</div>
+  <p>规则集要随指南一起演进。保留各个历史版本，以免指南的修改给现有 API 的 CI/CD 流水线带来破坏性的 lint 变化（除非你就是想这么做）。</p>
+</div>
+
+<h3>在具体的 API 上使用</h3>
+
+<p>在 API 的仓库里放一个 <strong><code>.spectral.yaml</code></strong>（用这个文件名，运行时就不用加 <code>-r</code>）：导入共享的指南，按需微调，加上本 API 特有的规则，忽略不打算修的问题。</p>
+
+<div class="code" data-lang="yaml" data-file=".spectral.yaml（仓库：18.9. …/api-repository/）">
+<pre>
+extends:
+  - https://guidelines.intra/guidelines.spectral.yaml     # 从集中的位置拉取共享的规则
+
+rules:
+  # ---- 调整导入的规则 ----
+  pagination: info                    # 在这个 API 上降低严重级别
+  vocabulary-experimental: true       # 开启一条默认关闭（recommended: false）的实验性规则
+
+  # ---- 本 API 特有的规则 ----
+  bnkng-http-sig:
+    description: Every path must use the HTTP signature parameter
+    severity: error
+    given:
+      - $.paths.*
+    then:
+      - field: parameters
+        function: schema
+        functionOptions:
+          schema:
+            type: array
+            contains:
+              const:
+                $ref: "#/components/parameters/HttpSignature"
+
+# ---- 忽略不打算修的问题 ----
+overrides:
+  - files:
+      - "**/openapi.yaml#/paths/~1accounts/get"     # 文件 + 指向问题位置的 JSON Pointer
+    rules:
+      search-q-defined: off
+</pre>
+</div>
+
+<p>
+  <code>overrides</code> 里的 JSON Pointer 由 CLI 输出的点分路径改写而来：<code>paths./accounts.get</code> → 前面加 <code>#</code>，<code>.</code> 换成 <code>/</code>，而路径里本身的 <code>/</code> 要转义成 <strong><code>~1</code></strong> → <code>#/paths/~1accounts/get</code>。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="共享的指南规则集被多个 API 仓库的本地 .spectral.yaml 导入和调整，并在 IDE 和 CI 中运行">
+  <rect class="bx-a" x="20" y="60" width="220" height="100" rx="12"/>
+  <text class="ttl on-a" x="130" y="84" text-anchor="middle">共享的指南规则集</text>
+  <text class="mono sm" x="130" y="106" text-anchor="middle">guidelines.spectral.yaml</text>
+  <text class="sm" x="130" y="128" text-anchor="middle">extends: errors、search、openapi…</text>
+  <text class="sm" x="130" y="146" text-anchor="middle">集中存放、有版本</text>
+
+  <rect class="bx-b" x="300" y="20" width="200" height="74" rx="10"/>
+  <text class="ttl on-b" x="400" y="44" text-anchor="middle">银行 API 仓库</text>
+  <text class="mono sm" x="400" y="64" text-anchor="middle">.spectral.yaml</text>
+  <text class="sm" x="400" y="82" text-anchor="middle">extends + 微调 + 特有规则 + 忽略</text>
+  <rect class="bx-b" x="300" y="116" width="200" height="74" rx="10"/>
+  <text class="ttl on-b" x="400" y="140" text-anchor="middle">购物 API 仓库</text>
+  <text class="mono sm" x="400" y="160" text-anchor="middle">.spectral.yaml</text>
+  <text class="sm" x="400" y="178" text-anchor="middle">extends（原样使用）</text>
+  <path class="ln-a" d="M240 96 C270 96 270 58 298 58" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M240 124 C270 124 270 152 298 152" marker-end="url(#ar-a)"/>
+
+  <rect class="bx" x="560" y="20" width="180" height="50" rx="10"/><text class="ttl" x="650" y="42" text-anchor="middle">IDE</text><text class="sm" x="650" y="60" text-anchor="middle">边写边查</text>
+  <rect class="bx" x="560" y="80" width="180" height="50" rx="10"/><text class="ttl" x="650" y="102" text-anchor="middle">终端</text><text class="mono sm" x="650" y="120" text-anchor="middle">spectral lint</text>
+  <rect class="bx" x="560" y="140" width="180" height="50" rx="10"/><text class="ttl" x="650" y="162" text-anchor="middle">CI/CD</text><text class="sm" x="650" y="180" text-anchor="middle">有 error 就阻止合并</text>
+  <path class="ln" d="M500 58 C530 58 530 45 558 45" marker-end="url(#ar)"/>
+  <path class="ln" d="M500 68 C530 68 530 105 558 105" marker-end="url(#ar)"/>
+  <path class="ln" d="M500 152 C530 152 530 165 558 165" marker-end="url(#ar)"/>
+</svg>
+<figcaption>图 18-4　规则集中管理，各个 API 就地使用</figcaption>
+</figure>
+
+<h3>把 lint 接进你的构建流程</h3>
+
+<p>
+  Spectral 是 Node.js 工具，但任何语言的项目都能用它：CLI 的 <code>-f json</code> 输出是结构化的，用脚本包一层就能接进自己的构建。
+  下面的代码运行 lint，按严重级别汇总，有 <code>error</code> 时让构建失败（TypeScript 版直接调用 Spectral 的库，不经过 CLI）：
+</p>
+
+<div class="tabs" data-title="在构建脚本里运行 Spectral">
+<div class="code" data-lang="python">
+<pre>
+"""lint_api.py —— 在 Python 项目（或任何 CI）里运行 Spectral 并汇总结果"""
+import json, subprocess, sys
+
+SEVERITY = {0: "error", 1: "warn", 2: "info", 3: "hint"}
+
+result = subprocess.run(
+    ["npx", "spectral", "lint", "openapi.yaml", "--format", "json", "--quiet"],
+    capture_output=True, text=True,
+)
+problems = json.loads(result.stdout or "[]")
+
+for p in sorted(problems, key=lambda p: p["severity"]):
+    line = p["range"]["start"]["line"] + 1          # Spectral 的行号从 0 开始
+    where = ".".join(str(s) for s in p["path"])
+    print(f"{SEVERITY[p['severity']]:5} L{line:&lt;4} {p['code']:32} {p['message']}  ({where})")
+
+errors = [p for p in problems if p["severity"] == 0]
+print(f"\n共 {len(problems)} 个问题，其中 {len(errors)} 个必须修复")
+sys.exit(1 if errors else 0)                        # 有 error 就让构建失败
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// lint-api.ts —— 直接调用 Spectral 的库，不经过 CLI
+// npm install @stoplight/spectral-core @stoplight/spectral-ruleset-bundler @stoplight/spectral-runtime
+import { readFileSync } from "node:fs";
+import * as fs from "node:fs";
+import { Spectral, Document } from "@stoplight/spectral-core";
+import { Yaml } from "@stoplight/spectral-parsers";
+import { bundleAndLoadRuleset } from "@stoplight/spectral-ruleset-bundler/with-loader";
+import { fetch } from "@stoplight/spectral-runtime";
+
+const SEVERITY = ["error", "warn", "info", "hint"];
+
+const spectral = new Spectral();
+spectral.setRuleset(await bundleAndLoadRuleset(`${process.cwd()}/.spectral.yaml`, { fs, fetch }));
+
+const document = new Document(readFileSync("openapi.yaml", "utf8"), Yaml, "openapi.yaml");
+const problems = await spectral.run(document);
+
+for (const p of [...problems].sort((a, b) =&gt; a.severity - b.severity)) {
+  const line = p.range.start.line + 1;              // 行号从 0 开始
+  console.log(
+    `${SEVERITY[p.severity].padEnd(5)} L${String(line).padEnd(4)} ${String(p.code).padEnd(32)} ` +
+    `${p.message}  (${p.path.join(".")})`,
+  );
+}
+
+const errors = problems.filter((p) =&gt; p.severity === 0);
+console.log(`\n共 ${problems.length} 个问题，其中 ${errors.length} 个必须修复`);
+process.exit(errors.length ? 1 : 0);                // 有 error 就让构建失败
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// LintApi.java —— 在 Java 项目（或 Maven/Gradle 的构建步骤）里运行 Spectral 并汇总结果
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.*;
+
+public class LintApi {
+    static final String[] SEVERITY = {"error", "warn", "info", "hint"};
+
+    public static void main(String[] args) throws Exception {
+        Process process = new ProcessBuilder(
+                "npx", "spectral", "lint", "openapi.yaml", "--format", "json", "--quiet")
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start();
+        JsonNode problems = new ObjectMapper().readTree(process.getInputStream());
+        process.waitFor();
+
+        List&lt;JsonNode&gt; sorted = new ArrayList&lt;&gt;();
+        problems.forEach(sorted::add);
+        sorted.sort(Comparator.comparingInt(p -&gt; p.get("severity").asInt()));
+
+        int errors = 0;
+        for (JsonNode p : sorted) {
+            int severity = p.get("severity").asInt();
+            if (severity == 0) errors++;
+            int line = p.at("/range/start/line").asInt() + 1;       // 行号从 0 开始
+            List&lt;String&gt; path = new ArrayList&lt;&gt;();
+            p.get("path").forEach(segment -&gt; path.add(segment.asText()));
+            System.out.printf("%-5s L%-4d %-32s %s  (%s)%n",
+                SEVERITY[severity], line, p.get("code").asText(),
+                p.get("message").asText(), String.join(".", path));
+        }
+
+        System.out.printf("%n共 %d 个问题，其中 %d 个必须修复%n", sorted.size(), errors);
+        System.exit(errors &gt; 0 ? 1 : 0);                            // 有 error 就让构建失败
+    }
+}
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; Linter 做不到的事</div>
+  <p>
+    Linter 只看得到 API 的描述。它不知道某个操作是否该设计成长操作（那取决于业务和架构），更不知道设计是否满足了用户需求。
+    可以期待未来结合了 AI 的 linter 更聪明 —— 能自动修复、能参考更广的上下文 —— 但判断「做对了事」仍然是设计者的职责。
+  </p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>Linting 是用程序（linter）分析源代码以发现错误或风格问题。API linting 用 API linter 分析 OpenAPI 文档，发现设计问题和 OpenAPI 写法问题，并防止日后本可避免的破坏性修改；用它来自动化设计指南。</li>
+  <li>Spectral 是一个 API linter：能自动化指南的大部分内容、可自定义和复用、能给出有帮助的反馈、能组织和共享规则，并能在具体的 API 上调整规则和忽略问题。替代品也应满足这些要求。</li>
+  <li>在 <code>rules</code> 下的每条规则里，用 <code>given</code> 的 JSONPath 找到要检查的元素，用 <code>then.function</code> 检查它们。</li>
+  <li>用 <code>documentationUrl</code> 指向指南，只创建有依据、有必要的规则；基于指南里的小陈述和共享组件创建规则，再组合起来覆盖更大的主题；用简洁的名字和描述检验粒度。</li>
+  <li>JSONPath：<code>$</code>（根）、<code>a.b</code>、<code>a.*</code>、<code>..b</code>、<code>[a,b]</code>、<code>a[?(条件)]</code>。</li>
+  <li>在 <code>aliases</code> 下定义可复用的路径，用 <code>#AliasName</code> 使用、<code>#AliasName.相对路径</code> 扩展；用「资源类型 + HTTP 方法」定位典型操作。</li>
+  <li>用 <code>pattern</code>、<code>casing</code>、<code>falsy</code>、<code>truthy</code> 等核心函数检查原子值；用 <code>field: "@key"</code> 检查对象的键。</li>
+  <li>用 <code>field</code> + <code>defined</code> 检查对象里某个键存在；用 <code>schema</code> 函数配合 <code>contains</code> 和 <code>const</code> 检查数组里有某一项；用 <code>undefined</code> 确保某个元素不存在。</li>
+  <li>用 <code>resolved: false</code> 检查是否使用了对本地或共享组件的引用。</li>
+  <li>用 <code>schema</code> 函数和「JSON Schema 的 JSON Schema」确保数据模型符合某个模式；用自定义函数做跨元素的检查。</li>
+  <li>用 <code>severity</code> 表明问题是必须修的错误、可能的问题、可选的改进，还是需要进一步调查；用 <code>message</code>（可含占位符）给出有助于解决问题的消息。</li>
+  <li>把规则分组，用 <code>extends</code> 导入规则集；在 OpenAPI 文档旁边放一个 <code>.spectral.yaml</code>，导入并定制共享的指南、添加 API 特有的规则，并用 <code>overrides</code> 忽略不需要解决的问题。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <p>本仓库 <code>18. Automating API design guidelines/18.10. Exercises/</code> 下有每道题的 OpenAPI 文件和参考规则，可以用 <code>npm run E.18.1</code> 这样的命令运行。</p>
+  <ol>
+    <li>
+      写一条规则，要求 <code>info.version</code> 使用带文档版本的语义化版本（如 <code>1.0.0</code>）。<code>athena-1.0.0.bugfix</code> 应该被报出来，并且消息要让人知道怎么改。
+      <details class="ans"><summary>参考答案</summary>
+<div class="code" data-lang="yaml"><pre>
+rules:
+  semantic-version:
+    description: API version must use semantic versioning (major.minor.patch)
+    severity: error
+    message: "{{value}} is not a semantic version; use major.minor.patch, like 1.0.0"
+    given:
+      - $.info.version
+    then:
+      function: pattern
+      functionOptions:
+        match: /^\d+\.\d+\.\d+$/
+</pre></div>
+      </details>
+    </li>
+    <li>
+      有些搜索操作为了避开查询参数的限制，被设计成 <code>POST /resources/search</code>。写一条规则确保这类操作没有查询参数。
+      <details class="ans"><summary>参考答案</summary>
+        要同时考虑操作级和路径级的参数：
+<div class="code" data-lang="yaml"><pre>
+aliases:
+  SearchResources:
+    - $.paths[?(@property.match(/\/search$/))]
+rules:
+  post-search-no-query-parameter:
+    description: POST /resources/search operations must not have query parameters
+    severity: error
+    message: Move the {{value}} filter to the request body
+    given:
+      - "#SearchResources.parameters[?(@.in === 'query')].name"
+      - "#SearchResources.post.parameters[?(@.in === 'query')].name"
+    then:
+      function: undefined
+</pre></div>
+      </details>
+    </li>
+    <li>
+      所有 API 的每个操作都必须返回标准的 <code>503</code> 错误，响应体是一个对象：必填的字符串 <code>message</code> 和可选的 ISO 8601 <code>endTime</code>。写一条规则<em>高效地</em>强制这一点。
+      <details class="ans"><summary>提示</summary>
+        「高效」的关键是第 ③ 条原则：不要用规则去逐项检查媒体类型和 schema，而是在共享的 OpenAPI 库里定义一个 <code>Error503</code> 响应，然后用一条 <code>resolved: false</code> 的规则检查每个操作的 <code>responses</code> 里 <code>"503"</code> 存在且 <code>const</code> 等于对该组件的 <code>$ref</code>（写法同「④ 检查引用」里的 <code>500</code>）。
+      </details>
+    </li>
+    <li>
+      写一条规则，确保所有 <code>201</code> 响应的 schema 都定义了一个必填的、类型为字符串或整数的 <code>id</code> 属性（还可以有别的属性）。
+      <details class="ans"><summary>提示</summary>
+        定位 <code>$.paths.*.*.responses.201.content.application/json.schema</code>（在解析后的文档上），用 <code>schema</code> 函数写一个「JSON Schema 的 JSON Schema」：
+        被检查的 schema 的 <code>required</code> 是一个 <code>contains: { const: id }</code> 的数组；它的 <code>properties.id.type</code> 是 <code>enum: [string, integer]</code>。
+      </details>
+    </li>
+    <li>把第 16 章用脚本手写的三条检查（kebab-case 路径、每个操作有 <code>summary</code>、每个操作有 <code>500</code>）改写成 Spectral 规则，体会一下差别。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

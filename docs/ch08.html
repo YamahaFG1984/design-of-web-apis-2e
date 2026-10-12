@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 8 章 · 好用、可互操作的数据 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="8">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 8 章</span>
+<h1>好用、可互操作的数据</h1>
+<p class="lede">
+  第一部分我们设计出了一个「做对的事」的 API。从这一章开始进入第二层：让它<strong>好用</strong>（容易理解、用起来顺手）
+  而且<strong>可互操作</strong>（不同系统之间不用费劲转换就能对接）。先从最小的单位 —— 数据 —— 开始。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>理解 API 的用户体验，以及「好用」「可互操作」各指什么</li>
+    <li>选择并加工出「拿来即用」的数据</li>
+    <li>为原子数据选择合适的类型和格式（数字、代码、日期时间）</li>
+    <li>用对象和数组把数据组织好，并控制好粒度</li>
+    <li>起出简单、有层次、简短的名字</li>
+    <li>在整个 API 乃至所有 API 之间保持一致，尽量采用标准</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="ux">API 也有用户体验</h2>
+
+<p>
+  想象一台洗衣机，启动后屏幕显示 <code>EC 50400</code>。翻说明书才知道：这是「洗涤结束时间，从零点起算的秒数」。
+  知道了还得心算。直接显示「14:35 洗完」不好吗？
+  这台洗衣机<em>满足了需求</em>（洗衣服、告诉你什么时候洗完），但<strong>不好用</strong>。
+</p>
+
+<p>
+  再想象洗衣机面板上的那些洗涤图标（一个水盆下面两条线 = 轻柔洗）。它们未必一眼能懂，但全世界的衣物标签都用同一套（ISO 3758 标准）——
+  这就是<strong>互操作性</strong>：衣服标签和任何一台洗衣机都能对上。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="同样的信息两种呈现方式：难用的 ec 50400 和不标准的 2-35，对比好用且标准的 ISO 8601 时间">
+  <rect class="bx-r" x="20" y="24" width="226" height="180" rx="12"/>
+  <text class="ttl on-r" x="133" y="50" text-anchor="middle">不好用</text>
+  <rect class="bx" x="40" y="66" width="186" height="46" rx="8"/>
+  <text class="mono" x="133" y="94" text-anchor="middle">{ "ec": 50400 }</text>
+  <text class="sm" x="133" y="138" text-anchor="middle">ec 是什么？</text>
+  <text class="sm" x="133" y="156" text-anchor="middle">50400 是什么单位？</text>
+  <text class="sm" x="133" y="174" text-anchor="middle">查文档 + 自己算</text>
+
+  <rect class="bx-r" x="267" y="24" width="226" height="180" rx="12"/>
+  <text class="ttl on-r" x="380" y="50" text-anchor="middle">不可互操作</text>
+  <rect class="bx" x="287" y="66" width="186" height="46" rx="8"/>
+  <text class="mono" x="380" y="94" text-anchor="middle">{ "endOfCycle": "2-35" }</text>
+  <text class="sm" x="380" y="138" text-anchor="middle">名字清楚了，但格式是自创的</text>
+  <text class="sm" x="380" y="156" text-anchor="middle">上午还是下午？哪个时区？</text>
+  <text class="sm" x="380" y="174" text-anchor="middle">每个消费者都得写专门的解析</text>
+
+  <rect class="bx-g" x="514" y="24" width="226" height="180" rx="12"/>
+  <text class="ttl on-g" x="627" y="50" text-anchor="middle">好用且可互操作</text>
+  <rect class="bx" x="534" y="66" width="186" height="46" rx="8"/>
+  <text class="mono sm" x="627" y="86" text-anchor="middle">{ "cycleEnd":</text>
+  <text class="mono sm" x="627" y="102" text-anchor="middle">"2025-03-01T14:35:00Z" }</text>
+  <text class="sm" x="627" y="138" text-anchor="middle">一看就懂</text>
+  <text class="sm" x="627" y="156" text-anchor="middle">ISO 8601：任何语言一行解析</text>
+  <text class="sm" x="627" y="174" text-anchor="middle">能直接传给别的 API</text>
+</svg>
+<figcaption>图 8-1　满足需求只是起点。数据还得让人看得懂、让系统接得上</figcaption>
+</figure>
+
+<h3>谁的体验</h3>
+
+<p>
+  API 的用户体验（UX）常被叫作<strong>开发者体验（DX）</strong>，因为主要用户是写代码调用它的开发者。
+  但用户不止他们：在电子表格里调 API 的业务分析师、用 API 客户端做测试的 QA、浏览开发者门户做选型的架构师、越来越多的 AI 应用，
+  以及隔着一层应用间接感受 API 的最终用户。
+</p>
+
+<p>
+  对公开 API，体验差的后果是用户掉头就走。对私有 API，后果更隐蔽也更糟：<strong>你没法换</strong>，只能日复一日地忍受它带来的复杂代码和不稳定。
+</p>
+
+<h3>好用、可互操作的数据有什么特征</h3>
+
+<p>无论数据出现在哪里 —— 路径、参数、请求头、请求体、成功响应还是错误响应 —— 都适用下面几条。以一个租车 API 为例：</p>
+
+<div class="tw">
+<table>
+  <tr><th>特征</th><th>反例</th><th>改进</th></tr>
+  <tr><td><strong>满足用户需求</strong></td><td>用内部黑话「业务区域引用」来称呼门店位置</td><td>叫「门店位置」。从外向内看自己的数据</td></tr>
+  <tr><td><strong>容易找到和理解</strong></td><td><code>"la": 12</code> 和 <code>"lo": 34</code> 散落在一堆属性中间</td><td>一个 <code>location</code> 对象，里面是 <code>latitude</code> 和 <code>longitude</code></td></tr>
+  <tr><td><strong>减少消费者的工作</strong></td><td>只给经纬度，消费者得自己做逆地理编码</td><td>直接附上现成的 <code>address</code></td></tr>
+  <tr><td><strong>一致</strong></td><td>门店位置是十进制度数的对象，车辆位置却是 <code>"place": ["34° 0' 0", "12° 0' 0"]</code></td><td>所有位置都用相似的名字、同样的结构和单位</td></tr>
+  <tr><td><strong>标准</strong>（互操作）</td><td>自创的坐标表示法</td><td>考虑采用 GeoJSON（RFC 7946）的 Geometry 对象</td></tr>
+</table>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 标准不一定好用</div>
+  <p>
+    GeoJSON 的点长这样：<code>{"type": "Point", "coordinates": [12, 34]}</code>。数组里哪个是经度哪个是纬度？很多人永远记不住。
+    标准有时会为了通用或效率牺牲易用性，采用前要掂量。
+  </p>
+</div>
+
+<h3>什么时候做、怎么做</h3>
+
+<p>
+  好用性是对数据建模的<strong>第二遍</strong>处理。第一遍（第 5 章）建模时不要争论 <code>longitude</code> 还是 <code>lng</code>、要不要用 GeoJSON —— 识别出「需要坐标」就够了。
+  第二遍按下面的顺序过一遍。本章接下来换一个例子：<strong>银行 API</strong> 里的「银行账户」资源。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="设计好用数据的四个步骤和两条贯穿始终的原则">
+  <rect class="bx-a" x="20" y="24" width="168" height="96" rx="12"/>
+  <text class="ttl on-a" x="104" y="50" text-anchor="middle">① 拿来即用</text>
+  <text class="sm" x="104" y="74" text-anchor="middle">选对数据</text>
+  <text class="sm" x="104" y="92" text-anchor="middle">补充辅助和加工后的数据</text>
+  <rect class="bx-a" x="204" y="24" width="168" height="96" rx="12"/>
+  <text class="ttl on-a" x="288" y="50" text-anchor="middle">② 类型与组织</text>
+  <text class="sm" x="288" y="74" text-anchor="middle">原子类型和格式</text>
+  <text class="sm" x="288" y="92" text-anchor="middle">对象、数组、排序</text>
+  <rect class="bx-a" x="388" y="24" width="168" height="96" rx="12"/>
+  <text class="ttl on-a" x="472" y="50" text-anchor="middle">③ 粒度</text>
+  <text class="sm" x="472" y="74" text-anchor="middle">每个数据都相关吗？</text>
+  <text class="sm" x="472" y="92" text-anchor="middle">该不该内嵌？</text>
+  <rect class="bx-a" x="572" y="24" width="168" height="96" rx="12"/>
+  <text class="ttl on-a" x="656" y="50" text-anchor="middle">④ 命名</text>
+  <text class="sm" x="656" y="74" text-anchor="middle">最后才做</text>
+  <text class="sm" x="656" y="92" text-anchor="middle">简单、有层次、简短</text>
+  <path class="ln-a" d="M188 72 H202" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M372 72 H386" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M556 72 H570" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-b" x="20" y="140" width="720" height="40" rx="10"/>
+  <text class="ttl on-b" x="380" y="165" text-anchor="middle">贯穿始终：保持一致 · 尽量采用标准</text>
+</svg>
+<figcaption>图 8-2　设计好用、可互操作的数据</figcaption>
+</figure>
+
+<h2 id="ready">选择并加工出拿来即用的数据</h2>
+
+<p>目标：消费者拿到数据后<strong>不用思考、不用加工</strong>就能直接使用（或者能直接提供）。</p>
+
+<h3>1. 选简单但够用的数据</h3>
+<p>
+  银行系统里一个账户有<strong>好几种余额</strong>（计算方式不同）。全给出来最通用，但消费者得自己判断该用哪个；
+  只给银行 App 里最常显示的那一个最简单，但限制了可能性。怎么选要看目标用户：
+  面向非专业人士就给一个；面向银行业专家就全给。折中方案：全给，但<strong>标出默认的那个</strong>。
+</p>
+
+<h3>2. 加辅助数据，消除猜测</h3>
+<p>
+  余额是 <code>123</code>。123 什么？欧元？并非所有欧洲国家都用欧元，就算用，也可能开了外币账户。
+  把<strong>币种</strong>和金额放在一起，解读就既容易又准确。
+</p>
+
+<h3>3. 加处理过的数据，替消费者省事</h3>
+<p>
+  需求之一是「帮用户评估还能花多少钱」。第一遍建模时我们给了余额和透支额度信息（是否启用、额度多少）。
+  但这要求消费者自己写逻辑：<em>如果透支启用，就把额度加到余额上</em>。是加还是减？有没有已知但未入账的交易要考虑？
+  直接给一个 <strong>可安全支出金额（safe to spend）</strong>，消费者就什么都不用算了。
+</p>
+
+<div class="tabs" data-title="消费者代码：自己算 vs 直接用">
+<div class="code" data-lang="python">
+<pre>
+account = httpx.get(f"{base}/accounts/{iban}").json()
+
+# ✗ 之前：消费者要实现银行的业务规则，而且很容易算错
+#   {"balance": 1700, "overdraftActive": true, "overdraftLimit": 100}
+safe_to_spend = account["balance"]
+if account["overdraftActive"]:
+    safe_to_spend += account["overdraftLimit"]     # 是加还是减？未入账交易算了吗？
+print(f"可用：{safe_to_spend}")                     # 币种是什么？只能猜
+
+# ✓ 之后：加工好的数据 + 辅助数据，拿来即用
+#   {"safeToSpend": {"amount": 1800, "currency": "EUR"}}
+sts = account["safeToSpend"]
+print(f"可用：{sts['amount']} {sts['currency']}")
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const account = await (await fetch(`${base}/accounts/${iban}`)).json();
+
+// ✗ 之前：消费者要实现银行的业务规则，而且很容易算错
+//   {"balance": 1700, "overdraftActive": true, "overdraftLimit": 100}
+let safeToSpend: number = account.balance;
+if (account.overdraftActive) {
+  safeToSpend += account.overdraftLimit;           // 是加还是减？未入账交易算了吗？
+}
+console.log(`可用：${safeToSpend}`);                // 币种是什么？只能猜
+
+// ✓ 之后：加工好的数据 + 辅助数据，拿来即用
+//   {"safeToSpend": {"amount": 1800, "currency": "EUR"}}
+const { amount, currency } = account.safeToSpend;
+console.log(new Intl.NumberFormat("zh-CN", { style: "currency", currency }).format(amount));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// ✗ 之前：消费者要实现银行的业务规则，而且很容易算错
+record OldAccount(BigDecimal balance, boolean overdraftActive, BigDecimal overdraftLimit) {}
+
+OldAccount old = api.get().uri("/accounts/{iban}", iban).retrieve().body(OldAccount.class);
+BigDecimal safeToSpend = old.balance();
+if (old.overdraftActive()) {
+    safeToSpend = safeToSpend.add(old.overdraftLimit());   // 是加还是减？未入账交易算了吗？
+}
+System.out.println("可用：" + safeToSpend);                 // 币种是什么？只能猜
+
+// ✓ 之后：加工好的数据 + 辅助数据，拿来即用
+record Amount(BigDecimal amount, String currency) {}
+record Account(String iban, Amount safeToSpend) {}
+
+Account account = api.get().uri("/accounts/{iban}", iban).retrieve().body(Account.class);
+System.out.printf("可用：%s %s%n", account.safeToSpend().amount(), account.safeToSpend().currency());
+</pre>
+</div>
+</div>
+
+<div class="box key">
+  <div class="t">&#9733; 这也是在隐藏提供者视角</div>
+  <p>辅助数据和加工数据让消费者不必实现<em>我们的</em>业务规则，也就不会因为不了解内情或数据不全而出错。加了 <code>safeToSpend</code> 之后，可以重新审视余额和透支信息是否还有必要保留。</p>
+</div>
+
+<h3>4. 选众所周知或标准的标识符</h3>
+
+<p>标识符不只是用来唯一定位资源，它还负责<strong>把不同系统的数据、把用户和系统连接起来</strong>。一个银行账户有三个候选：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 190" role="img" aria-label="银行账户的三种标识符：内部 ID、账号、IBAN，认识它的范围依次扩大">
+  <rect class="bx-r" x="20" y="24" width="226" height="140" rx="12"/>
+  <text class="ttl on-r" x="133" y="48" text-anchor="middle">内部 ID</text>
+  <text class="mono sm" x="133" y="74" text-anchor="middle">a686783e-d699-421b-…</text>
+  <text class="sm" x="133" y="104" text-anchor="middle">只有管理账户的那个子系统认识</text>
+  <text class="sm" x="133" y="122" text-anchor="middle">又长又难记</text>
+  <text class="sm on-r" x="133" y="148" text-anchor="middle">&#10007; 搁置</text>
+
+  <rect class="bx-b" x="267" y="24" width="226" height="140" rx="12"/>
+  <text class="ttl on-b" x="380" y="48" text-anchor="middle">账号</text>
+  <text class="mono sm" x="380" y="74" text-anchor="middle">00003333333</text>
+  <text class="sm" x="380" y="104" text-anchor="middle">全行所有系统和客户都认识</text>
+  <text class="sm" x="380" y="122" text-anchor="middle">测试时也好记</text>
+  <text class="sm on-b" x="380" y="148" text-anchor="middle">内部使用可以</text>
+
+  <rect class="bx-g" x="514" y="24" width="226" height="140" rx="12"/>
+  <text class="ttl on-g" x="627" y="48" text-anchor="middle">IBAN（国际银行账号）</text>
+  <text class="mono sm" x="627" y="74" text-anchor="middle">FR7611111222220000333333320</text>
+  <text class="sm" x="627" y="104" text-anchor="middle">国际标准，全世界通用</text>
+  <text class="sm" x="627" y="122" text-anchor="middle">外部系统能直接对上自己的数据</text>
+  <text class="sm on-g" x="627" y="148" text-anchor="middle">&#10003; 首选</text>
+</svg>
+<figcaption>图 8-3　认识这个标识符的范围越大越好。除非有充分理由（如安全，见第 12 章），优先选标准标识符</figcaption>
+</figure>
+
+<p>选了 IBAN 做资源标识符，并不妨碍把账号也作为普通数据放在模型里。</p>
+
+<h3>5. 其他数据也尽量用众所周知或标准的</h3>
+<p>
+  行内系统用 <code>EU</code>、<code>UD</code> 表示欧元和美元，内部人人都懂。但对外应使用国际通行的 <strong>ISO 4217</strong> 货币代码：<code>EUR</code>、<code>USD</code>。
+  没有标准可用也不要紧，系统间共享的约定也能实现互操作；实在不行，只在本地通用也可以接受。
+</p>
+
+<h2 id="types">原子数据的类型与格式</h2>
+
+<p>布尔值只要名字起得好，天然就好用。字符串和数字则容易出问题：</p>
+
+<div class="tw">
+<table>
+  <tr><th>数据</th><th>不好的写法</th><th>问题</th><th>好的写法</th></tr>
+  <tr><td>余额</td><td><code>"€1,234.5"</code></td><td>把可计算的数字格式化成了字符串</td><td><code>1234.5</code> + 单独的币种</td></tr>
+  <tr><td>账号</td><td><code>1234567</code></td><td>是数字形式的<em>编码</em>，丢了前导零</td><td><code>"0001234567"</code></td></tr>
+  <tr><td>账户类型</td><td><code>1</code> 或 <code>"xbt"</code></td><td>人看不懂的代码</td><td><code>"checking"</code></td></tr>
+  <tr><td>创建日期</td><td><code>409228260</code></td><td>人读不出来的时间戳</td><td><code>"1982-12-20"</code></td></tr>
+</table>
+</div>
+
+<h3>数字要不要格式化成字符串</h3>
+<ul>
+  <li>
+    <strong>会被用来计算的数字，不要格式化。</strong><code>"€1,234.5"</code> 看似省事，可消费者想计算时得先解析它；
+    而且格式因地而异 —— 法国的界面应该显示 <code>1 234,5 €</code>。怎么给人看由消费者按用户的区域设置决定，API 只给原始数字和币种。
+  </li>
+  <li>
+    <strong>数字形式的编号或代码，适合格式化成字符串。</strong>账号 <code>1234567</code> 要补齐前导零到固定长度才是合法账号，这个长度连行业老手都记不住，所以直接给 <code>"0001234567"</code>。
+  </li>
+</ul>
+
+<h3>避免人读不懂的代码</h3>
+<p>
+  <code>1</code>、<code>7</code>、<code>"xbt"</code>、<code>"tvp"</code> 没有字典就无法解读；<code>c</code>、<code>s</code> 这类缩写也只有内行能猜到。
+  用完整的英文单词：<code>"checking"</code>、<code>"savings"</code> —— 也就是你写代码时会放进枚举里的那种值。
+</p>
+<p>
+  如果代码已经被多个系统使用、改不了，就在旁边加一个<strong>人能读的标签</strong>：
+  <code>"type": 7, "typeLabel": "savings"</code>，或者做成一个带 <code>code</code> 和 <code>label</code> 的对象。
+</p>
+
+<h3>日期和时间：用 ISO 8601</h3>
+
+<p>API 里表示时间通常有两种方式。强烈推荐后者：</p>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>Unix 时间戳（数字）</th><th>ISO 8601（字符串）</th></tr>
+  <tr><td>示例</td><td><code>409228260</code></td><td><code>1982-12-20T10:31:00Z</code></td></tr>
+  <tr><td>人能读吗</td><td>&#10007; 看日志时无法判断是哪天</td><td>&#10003;</td></tr>
+  <tr><td>只表示日期</td><td>&#10007; 分不清它是日期还是日期时间</td><td>&#10003; <code>1982-12-20</code></td></tr>
+  <tr><td>单位</td><td>&#10007; 秒？毫秒？<code>1704067200</code> 按秒是 2024 年，按毫秒是 1970 年 1 月</td><td>&#10003; 无歧义</td></tr>
+  <tr><td>时区</td><td>只能是 UTC</td><td><code>Z</code> 表示 UTC；也可带偏移 <code>+01:00</code></td></tr>
+  <tr><td>手工构造测试数据</td><td>&#10007; 很难</td><td>&#10003; 改个数字就行</td></tr>
+</table>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 130" role="img" aria-label="ISO 8601 日期时间字符串的各个部分">
+  <text class="mono" x="380" y="52" text-anchor="middle" style="font-size:26px"><tspan class="on-b">1982-12-20</tspan><tspan class="on-r">T</tspan><tspan class="on-g">10:31:00</tspan><tspan class="on-p">Z</tspan></text>
+  <path class="ln-b" d="M250 64 V84"/><text class="lbl on-b" x="250" y="102" text-anchor="middle">年-月-日</text>
+  <path class="ln-r" d="M374 64 V84"/><text class="lbl on-r" x="374" y="102" text-anchor="middle">分隔符</text>
+  <path class="ln-g" d="M450 64 V84"/><text class="lbl on-g" x="450" y="102" text-anchor="middle">时:分:秒</text>
+  <path class="ln-p" d="M530 64 V84"/><text class="lbl on-p" x="560" y="102" text-anchor="middle">时区：Z = UTC</text>
+  <text class="sm" x="380" y="124" text-anchor="middle">JSON Schema：<tspan class="mono">format: date-time</tspan>；只要日期时用 <tspan class="mono">format: date</tspan></text>
+</svg>
+<figcaption>图 8-4　ISO 8601 的日期时间。它还定义了时长：<code>P2Y3M5DT11H30M5S</code> = 2 年 3 个月 5 天 11 小时 30 分 5 秒</figcaption>
+</figure>
+
+<div class="box tip">
+  <div class="t">&#128161; 默认用 UTC</div>
+  <p>UTC 不受夏令时影响（切换那天凌晨 1:30 可能出现两次）。只有在确实需要时（比如审计或监管要求记录交易的当地时间）才使用带偏移的时间。只需要日期就别带时间，省得处理时区。</p>
+</div>
+
+<p>各语言处理 ISO 8601 都是一行的事：</p>
+
+<div class="tabs" data-title="解析与生成 ISO 8601">
+<div class="code" data-lang="python">
+<pre>
+from datetime import date, datetime, timezone
+
+executed = datetime.fromisoformat("1982-12-20T10:31:00+00:00")   # 3.11+ 也接受结尾的 Z
+created = date.fromisoformat("1982-12-20")
+
+print(executed.year, executed.tzinfo)        # 1982 UTC
+print(datetime.now(timezone.utc).isoformat(timespec="seconds"))
+# 2025-03-01T14:35:00+00:00
+
+# 对比：时间戳得先知道单位，否则差出 1000 倍
+print(datetime.fromtimestamp(409228260, timezone.utc))            # 按秒 → 1982-12-20
+print(datetime.fromtimestamp(409228260 / 1000, timezone.utc))     # 按毫秒 → 1970-01-05
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const executed = new Date("1982-12-20T10:31:00Z");
+
+console.log(executed.getUTCFullYear());      // 1982
+console.log(new Date().toISOString());       // 2025-03-01T14:35:00.000Z
+console.log(new Date().toISOString().slice(0, 10));   // 只要日期：2025-03-01
+
+// 对比：时间戳得先知道单位。JavaScript 的 Date 用毫秒，Unix 时间用秒
+console.log(new Date(409228260 * 1000).toISOString());  // 按秒 → 1982-12-20T10:31:00.000Z
+console.log(new Date(409228260).toISOString());         // 当成毫秒 → 1970-01-05T17:40:28.260Z
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+import java.time.*;
+
+Instant executed = Instant.parse("1982-12-20T10:31:00Z");
+LocalDate created = LocalDate.parse("1982-12-20");
+OffsetDateTime paris = OffsetDateTime.parse("1982-12-20T11:31:00+01:00");
+
+System.out.println(executed.equals(paris.toInstant()));   // true：同一时刻，不同时区写法
+System.out.println(Instant.now());                        // 2025-03-01T14:35:00Z
+System.out.println(Duration.parse("PT11H30M"));           // ISO 8601 时长
+
+// 对比：时间戳得先知道单位
+System.out.println(Instant.ofEpochSecond(409228260));     // 按秒 → 1982-12-20T10:31:00Z
+System.out.println(Instant.ofEpochMilli(409228260));      // 按毫秒 → 1970-01-05T17:40:28.260Z
+</pre>
+</div>
+</div>
+
+<h2 id="organize">组织数据</h2>
+
+<p>如果游戏手柄的方向键随机散落在各处，你肯定用不顺手。数据也一样。对比同一份账户数据的两种形态：</p>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">扁平、杂乱</div>
+    <div class="code" data-lang="json"><pre>
+{
+  "overdraft facility": true,
+  "date value balance": 2501,
+  "number": "00003333333",
+  "value-date balance date": "2024-01-28",
+  "type": "checking",
+  "expected balance": 2600,
+  "iban": "FR7611111222220000333333320",
+  "limit": 100,
+  "expected balance date": "2024-01-29",
+  "balance currency": "EUR",
+  "name": "Mr. and Ms. Forger",
+  "safe to spend": 1800,
+  "default balance": "value-date"
+}
+</pre></div>
+  </div>
+  <div class="new">
+    <div class="h">分组、分层、排序</div>
+    <div class="code" data-lang="json"><pre>
+{
+  "iban": "FR7611111222220000333333320",
+  "number": "00003333333",
+  "safe to spend": { "amount": 1800, "currency": "EUR" },
+  "type": "checking",
+  "name": "Mr. and Ms. Forger",
+  "balances": [
+    { "default": true, "type": "value-date",
+      "balance": { "amount": 2501, "currency": "EUR" },
+      "date": "2024-01-28" },
+    { "type": "expected",
+      "balance": { "amount": 2600, "currency": "EUR" },
+      "date": "2024-01-29" }
+  ],
+  "overdraft facility": {
+    "active": true,
+    "limit": { "amount": 100, "currency": "EUR" }
+  }
+}
+</pre></div>
+  </div>
+</div>
+
+<h3>用对象分组</h3>
+<p>
+  左边的 <code>overdraft facility</code> 和 <code>limit</code> 是一回事，但谁看得出来？
+  可以改名为 <code>overdraft facility limit</code>（靠名字关联），再把两者挪到一起（靠位置关联），
+  但最好的办法是放进一个 <strong><code>overdraft facility</code> 对象</strong>：里面是 <code>active</code> 和 <code>limit</code>。
+  业务概念一目了然，代码里也能当作一个整体来处理。
+</p>
+<p>
+  更通用的概念也值得成组：每一个金额都变成带 <code>amount</code> 和 <code>currency</code> 的对象。
+  这样每个值都能独立理解，而且同一种结构在各处复用，更有利于互操作。
+</p>
+
+<h3>用数组分组</h3>
+<p>
+  两种余额原本各占几个属性，还有一个 <code>default balance</code> 指向默认的那个。
+  既然它们都是余额，就放进 <code>balances</code> 数组，每项带 <code>type</code>；默认标记变成其中一项上的布尔值。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 经验法则</div>
+  <p>看到 <code>conceptThis</code>、<code>conceptThat</code> 这样共享前缀的属性 → 考虑对象。看到 <code>value1</code>、<code>value2</code>……<code>valueN</code> → 用数组（比如把地址的 <code>line1</code>–<code>line4</code> 换成 <code>lines</code> 数组）。</p>
+</div>
+
+<h3>排序</h3>
+<ul>
+  <li><strong>数组</strong>里的顺序对处理和展示有实际意义。JSON Schema 没法正式描述排序，就写在 <code>description</code> 里：「按余额类型排序：先 value-date 后 expected」。</li>
+  <li><strong>对象</strong>的属性顺序不影响代码，但影响人阅读数据和文档：相关的放一起，重要的放前面。</li>
+</ul>
+
+<div class="box warn">
+  <div class="t">&#9888; 别过度组织</div>
+  <p>每个子对象都应该代表一个业务概念，最好还能复用。不要为了分组而分组，更不要照着 UI 的版块来分组。</p>
+</div>
+
+<h2 id="granularity">数据的粒度与范围</h2>
+
+<h3>看相关性，不看大小</h3>
+<p>
+  模型有 20 个属性还是 100 个、3 层深还是 10 层深，本身都不是问题。问题是<strong>每一个元素有没有存在的理由</strong>。
+  <code>iban</code>、<code>number</code>、<code>type</code>、<code>name</code> 是表示一个银行账户所必需的；<code>safe to spend</code> 是满足需求所必需的；
+  而领域专家认为 <code>creation date</code> 对操作账户毫无帮助 —— 删掉它，模型更简单，干扰更少。
+</p>
+
+<h3>内嵌列表</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 190" role="img" aria-label="余额列表可以内嵌在账户中，交易列表应作为独立资源">
+  <rect class="bx" x="20" y="24" width="240" height="150" rx="12"/>
+  <text class="ttl" x="140" y="48" text-anchor="middle">银行账户</text>
+  <text class="mono sm" x="36" y="74">"iban": "FR76…",</text>
+  <rect class="bx-g" x="32" y="84" width="216" height="26" rx="5"/>
+  <text class="mono sm on-g" x="40" y="102">"balances": [ … ]</text>
+  <rect class="bx-r" x="32" y="118" width="216" height="26" rx="5"/>
+  <text class="mono sm on-r" x="40" y="136">"transactions": [ … ]</text>
+
+  <path class="ln-g" d="M248 97 H318" marker-end="url(#ar-g)"/>
+  <rect class="bx-g" x="320" y="24" width="420" height="68" rx="10"/>
+  <text class="ttl on-g" x="336" y="48">&#10003; 可以内嵌</text>
+  <text class="sm" x="336" y="68">只有寥寥几项（每种类型的当前余额）；不需要筛选和分页；</text>
+  <text class="sm" x="336" y="84">余额是账户的基本信息</text>
+
+  <path class="ln-r" d="M248 131 H318" marker-end="url(#ar-r)"/>
+  <rect class="bx-r" x="320" y="106" width="420" height="68" rx="10"/>
+  <text class="ttl on-r" x="336" y="130">&#10007; 应该独立</text>
+  <text class="sm" x="336" y="150">可能成千上万条，需要筛选、排序、分页；</text>
+  <text class="sm" x="336" y="166">交易是独立的概念 → <tspan class="mono">/accounts/{iban}/transactions</tspan></text>
+</svg>
+<figcaption>图 8-5　需要筛选或分页的列表不该内嵌。如果它之前没被识别成资源，需求分析时可能漏了东西</figcaption>
+</figure>
+
+<h3>内嵌别的资源：给多少</h3>
+<p>
+  账户需要关联「户主」和「透支服务」这两个独立资源。可以给一个 ID、一份摘要，或者完整的模型（第 5 章的典型模型）。判断方法：
+</p>
+
+<div class="box key">
+  <div class="t">&#9733; 消费者读了这个资源之后，是不是每次都得接着去读那个内嵌资源？</div>
+  <p>
+    <strong>是</strong> → 它们是一个整体，至少内嵌<strong>摘要</strong>（需要更多就给完整模型）。例：银行顾问处理账户时总要看户主姓名，只给户主 ID 就得多调 N 次。<br>
+    <strong>否</strong> → 它们只是有关联，给一个 <strong>ID</strong> 就够。例：有了 <code>safe to spend</code>，处理账户时并不需要透支服务的细节。<br>
+    一串光秃秃的 ID 列表往往毫无意义：要么至少给摘要，要么考虑去掉这个列表。
+  </p>
+</div>
+
+<h2 id="names">起个好名字</h2>
+
+<h3>什么时候起名</h3>
+<p>
+  要分清两件事：<strong>识别出正确的概念</strong>（第一遍设计）和<strong>设计好用的名字</strong>（现在）。
+  第一遍时直接叫它「overdraft facility active」就够了。名字受类型、格式和上下文影响：
+  它可能后来变成了字符串枚举（<code>active</code> / <code>suspended</code> / <code>ended</code>），可能被放进了对象里所以叫 <code>active</code> 就行，甚至可能根本没被保留。
+  所以<strong>起名是最后一步</strong>。
+</p>
+
+<h3>三条原则</h3>
+<ul>
+  <li><strong>简单</strong>：用人人都懂的词，避免黑话 —— 但不要为了简单牺牲含义。</li>
+  <li><strong>有层次</strong>：用大小写分隔单词（<code>camelCase</code> 或 <code>snake_case</code>）；多个词按「父/宽泛 → 子/具体」从左到右排。</li>
+  <li><strong>简短</strong>：争取不超过三个词（同样不能牺牲含义）。上下文已经说明的前缀、表示类型的后缀、不影响理解的词，都可以去掉。避免缩写，除非是广为人知的。</li>
+</ul>
+
+<h3>修一个烂名字</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 400" role="img" aria-label="把 ACTBLNDFPRTFTBKACC 一步步改成 overdraftFacility 的过程">
+  <g font-family="var(--mono)">
+    <rect class="bx-r" x="150" y="14" width="460" height="32" rx="6"/>
+    <text class="mono on-r" x="380" y="35" text-anchor="middle" style="font-size:14px">ACTBLNDFPRTFTBKACC</text>
+
+    <rect class="bx" x="150" y="64" width="460" height="32" rx="6"/>
+    <text class="mono" x="380" y="85" text-anchor="middle" style="font-size:14px">actBlnDfPrtFtBkAcc</text>
+
+    <rect class="bx" x="150" y="114" width="460" height="32" rx="6"/>
+    <text class="mono" x="380" y="135" text-anchor="middle">activeBlnDeficitProtectionFeatureBankAccount</text>
+
+    <rect class="bx" x="150" y="164" width="460" height="32" rx="6"/>
+    <text class="mono" x="380" y="185" text-anchor="middle">bankAccountDeficitProtectionFeatureActiveBln</text>
+
+    <rect class="bx" x="150" y="214" width="460" height="32" rx="6"/>
+    <text class="mono" x="380" y="235" text-anchor="middle">bankAccountDeficitProtection</text>
+
+    <rect class="bx" x="150" y="264" width="460" height="32" rx="6"/>
+    <text class="mono" x="380" y="285" text-anchor="middle" style="font-size:14px">deficitProtection</text>
+
+    <rect class="bx-g" x="150" y="314" width="460" height="32" rx="6"/>
+    <text class="mono on-g" x="380" y="335" text-anchor="middle" style="font-size:14px" font-weight="700">overdraftFacility</text>
+  </g>
+  <g>
+    <path class="ln-a" d="M380 46 V62" marker-end="url(#ar-a)"/><text class="sm" x="394" y="58">用驼峰分隔单词</text>
+    <path class="ln-a" d="M380 96 V112" marker-end="url(#ar-a)"/><text class="sm" x="394" y="108">展开不常见的缩写</text>
+    <path class="ln-a" d="M380 146 V162" marker-end="url(#ar-a)"/><text class="sm" x="394" y="158">按父 → 子的层次重排</text>
+    <path class="ln-a" d="M380 196 V212" marker-end="url(#ar-a)"/><text class="sm" x="394" y="208">去掉类型后缀 Bln、与布尔重复的 Active、多余的 Feature</text>
+    <path class="ln-a" d="M380 246 V262" marker-end="url(#ar-a)"/><text class="sm" x="394" y="258">去掉父级前缀 bankAccount（已经在账户模型里了）</text>
+    <path class="ln-a" d="M380 296 V312" marker-end="url(#ar-a)"/><text class="sm" x="394" y="308">换成大众熟悉的词</text>
+  </g>
+  <text class="sm" x="380" y="372" text-anchor="middle">同理 LMTDFPRTFTBKACC → overdraftFacilityLimit；两者共享前缀，于是可以再分组成</text>
+  <text class="mono sm" x="380" y="390" text-anchor="middle">"overdraftFacility": { "active": true, "limit": 100 }</text>
+</svg>
+<figcaption>图 8-6　起名的过程常常会反过来启发更好的分组</figcaption>
+</figure>
+
+<div class="box note">
+  <div class="t">&#9432; camelCase 还是 snake_case？</div>
+  <p>Java 和 JavaScript 习惯 <code>overdraftFacility</code>，Python 习惯 <code>overdraft_facility</code>。消费者很容易适配，按你的偏好选，但<strong>选了就全程一致</strong>。</p>
+</div>
+
+<h2 id="consistency">一致与标准化</h2>
+
+<p>
+  好用和互操作的共同基础是一致。它难在<strong>无处不在</strong>：选哪些数据、怎么组织、什么类型和格式、叫什么名字、用什么标准 ——
+  之前做过的每一个决定，都会成为之后设计的<strong>先例</strong>。第一个日期叫 <code>whateverDate</code> 并用了 ISO 8601，以后所有日期最好都照此办理。
+</p>
+
+<h3>在尽可能大的范围内寻求一致</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 210" role="img" aria-label="一致性的四个范围：单个 API 内、组织内、行业内、全球">
+  <ellipse class="bx" cx="380" cy="105" rx="360" ry="92"/>
+  <ellipse class="bx-b" cx="330" cy="105" rx="270" ry="72"/>
+  <ellipse class="bx-g" cx="280" cy="105" rx="180" ry="52"/>
+  <ellipse class="bx-a" cx="220" cy="105" rx="90" ry="32"/>
+  <text class="ttl on-a" x="220" y="101" text-anchor="middle">这个 API 内部</text>
+  <text class="sm" x="220" y="119" text-anchor="middle">最低要求</text>
+  <text class="ttl on-g" x="380" y="101" text-anchor="middle">组织内</text>
+  <text class="sm" x="384" y="119" text-anchor="middle">其他团队的模型</text>
+  <text class="ttl on-b" x="528" y="101" text-anchor="middle">行业</text>
+  <text class="sm" x="528" y="119" text-anchor="middle">ISO 20022</text>
+  <text class="ttl" x="668" y="101" text-anchor="middle">全球</text>
+  <text class="sm" x="668" y="119" text-anchor="middle">ISO 8601 / 4217</text>
+</svg>
+<figcaption>图 8-7　范围越大越好；只能做到本地一致也没关系</figcaption>
+</figure>
+
+<p>
+  动手建模前先找一找：团队或组织里是否已有「银行账户」模型？行业里有没有标准（银行业的 ISO 20022）？
+  能复用就复用，不能直接用就借鉴其中的模式。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 采用现成模型前要确认两件事</div>
+  <p>它真的满足你的需求吗？可互操作却不满足需求是不可接受的。它的复杂度可以接受吗？标准往往不是为非专业用户设计的。</p>
+</div>
+
+<h3>标识符：用同一个、按同一种方式命名</h3>
+
+<p>
+  如果账户模型用 IBAN 标识账户，转账的付款方却用内部 ID、收款方用账号，那就既不一致也难对接。全部用 IBAN，才既一致又可互操作。
+</p>
+
+<p>标识符的<strong>命名模式</strong>也要定下来，让人一眼认出「哪个是本资源的 ID、哪些是指向别的资源的 ID」：</p>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">不一致：哪个才是资源标识符？</div>
+    <div class="code" data-lang="json"><pre>
+// 账户
+{ "accountId": "...", "iban": "...", "ownerRef": "..." }
+
+// 户主
+{ "ownerId": "..." }
+</pre></div>
+  </div>
+  <div class="new">
+    <div class="h">一致：本资源叫 id，别处叫 资源名Id</div>
+    <div class="code" data-lang="json"><pre>
+// 账户
+{ "id": "...", "iban": "...", "ownerId": "..." }
+
+// 户主
+{ "id": "..." }
+</pre></div>
+  </div>
+</div>
+
+<p>
+  这个约定意味着：资源自己的标识符永远叫 <code>id</code>，在其他地方引用它时叫 <code>资源名Id</code>。
+  如果标识符同时是有业务含义的重要数据（IBAN），它可以在资源里出现两次：既是 <code>id</code>，也是 <code>iban</code>。
+</p>
+
+<h3>命名、类型、结构都要一致</h3>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">转账模型与账户模型不一致</div>
+    <div class="code" data-lang="json"><pre>
+// 账户
+{ "balance": { "value": 123.45, "currency": "EUR" },
+  "created": "2024-02-01",
+  "number": "00012345" }
+
+// 转账
+{ "amount": 12,
+  "currency": "EUR",
+  "executionDate": 1707215025,
+  "accountNumber": "12345" }
+</pre></div>
+  </div>
+  <div class="new">
+    <div class="h">一致</div>
+    <div class="code" data-lang="json"><pre>
+// 账户
+{ "balance": { "value": 123.45, "currency": "EUR" },
+  "created": "2024-02-01",
+  "number": "00012345" }
+
+// 转账
+{ "amount": { "value": 12, "currency": "EUR" },
+  "executed": "2024-02-06T10:23:45Z",
+  "accountNumber": "00012345" }
+</pre></div>
+  </div>
+</div>
+
+<p>左边有四处不一致：金额的<em>结构</em>、日期的<em>类型</em>（时间戳 vs ISO 8601）、日期的<em>命名模式</em>（<code>created</code> vs <code>executionDate</code>）、账号的<em>格式</em>（有无前导零）。</p>
+
+<p>在代码里，一致性的最好载体是<strong>可复用的类型</strong>。定义一次 <code>Amount</code>，所有出现金额的地方都用它，想不一致都难：</p>
+
+<div class="tabs" data-title="一个可复用的 Amount 模型">
+<div class="code" data-lang="python" data-file="Pydantic">
+<pre>
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Literal
+from pydantic import BaseModel, Field
+
+class Amount(BaseModel):
+    """所有金额都用这个结构：数值 + ISO 4217 货币代码"""
+    value: Decimal
+    currency: str = Field(pattern=r"^[A-Z]{3}$", examples=["EUR"])
+
+class BankAccount(BaseModel):
+    id: str                                   # 本资源的标识符永远叫 id（值是 IBAN）
+    iban: str
+    number: str = Field(pattern=r"^\d{11}$")  # 字符串，保留前导零
+    type: Literal["checking", "savings"]      # 人能读的代码
+    balance: Amount
+    safeToSpend: Amount
+    created: date                             # 只需要日期 → ISO 8601 日期
+
+class MoneyTransfer(BaseModel):
+    id: str
+    sourceAccountId: str                      # 引用别的资源：资源名 + Id，同样用 IBAN
+    destinationAccountId: str
+    amount: Amount                            # 与 balance 同一种结构
+    executed: datetime                        # 需要时间 → ISO 8601 日期时间（UTC）
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Zod">
+<pre>
+import { z } from "zod";
+
+/** 所有金额都用这个结构：数值 + ISO 4217 货币代码 */
+export const Amount = z.object({
+  value: z.number(),
+  currency: z.string().regex(/^[A-Z]{3}$/),
+});
+
+export const BankAccount = z.object({
+  id: z.string(),                              // 本资源的标识符永远叫 id（值是 IBAN）
+  iban: z.string(),
+  number: z.string().regex(/^\d{11}$/),        // 字符串，保留前导零
+  type: z.enum(["checking", "savings"]),       // 人能读的代码
+  balance: Amount,
+  safeToSpend: Amount,
+  created: z.string().date(),                  // 只需要日期 → ISO 8601 日期
+});
+
+export const MoneyTransfer = z.object({
+  id: z.string(),
+  sourceAccountId: z.string(),                 // 引用别的资源：资源名 + Id，同样用 IBAN
+  destinationAccountId: z.string(),
+  amount: Amount,                              // 与 balance 同一种结构
+  executed: z.string().datetime(),             // 需要时间 → ISO 8601 日期时间（UTC）
+});
+
+export type Amount = z.infer&lt;typeof Amount&gt;;
+export type BankAccount = z.infer&lt;typeof BankAccount&gt;;
+export type MoneyTransfer = z.infer&lt;typeof MoneyTransfer&gt;;
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Java records">
+<pre>
+import jakarta.validation.constraints.Pattern;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+
+/** 所有金额都用这个结构：数值 + ISO 4217 货币代码 */
+public record Amount(BigDecimal value, @Pattern(regexp = "^[A-Z]{3}$") String currency) {}
+
+enum AccountType { checking, savings }             // 人能读的代码
+
+record BankAccount(
+    String id,                                     // 本资源的标识符永远叫 id（值是 IBAN）
+    String iban,
+    @Pattern(regexp = "^\\d{11}$") String number,  // 字符串，保留前导零
+    AccountType type,
+    Amount balance,
+    Amount safeToSpend,
+    LocalDate created                              // 只需要日期 → 序列化为 "2024-02-01"
+) {}
+
+record MoneyTransfer(
+    String id,
+    String sourceAccountId,                        // 引用别的资源：资源名 + Id，同样用 IBAN
+    String destinationAccountId,
+    Amount amount,                                 // 与 balance 同一种结构
+    Instant executed                               // 需要时间 → "2024-02-06T10:23:45Z"
+) {}
+</pre>
+</div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 把决定沉淀下来</div>
+  <p>每做一个决定就创造了一个先例。把它们记录成团队的<strong>设计指南</strong>（第 16 章），并在 OpenAPI 里定义成可复用的 schema（第 17 章），以后就不用靠记忆来保持一致。</p>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>除了满足需求，用户还期望 API 好用：容易理解、用起来愉快。设计可以吸引用户，也可以赶走用户。</li>
+  <li>不论数据出现在哪里，都应简单、清晰、有帮助、直观、可互操作。</li>
+  <li>好用性放在第二遍处理：先确认数据满足需求，再打磨。</li>
+  <li>让数据拿来即用：选简单而有效的数据，补充辅助数据和加工后的数据，使用众所周知或标准的数据和标识符。</li>
+  <li>会参与计算的数字不要格式化成字符串；数字形式的编号或代码可以。</li>
+  <li>避免人读不懂的代码；避不开就加一个可读的标签。</li>
+  <li>日期时间用 ISO 8601；只在必要时才带时间精度，以免处理时区。</li>
+  <li>用对象归拢同一概念的属性，用数组归拢同类元素；给数组排序以便处理，给对象属性排序以便查找。</li>
+  <li>不要纠结属性数量和层级深度，要追问每个元素是否相关。</li>
+  <li>内嵌其他资源时，按需选择 ID、摘要或完整模型；不要内嵌需要搜索和分页的大数组。</li>
+  <li>起名放在定好类型、格式和组织之后：用简单的词、用大小写分词、按层次排列、去掉父级前缀/类型后缀/多余的词，尽量不超过三个词。</li>
+  <li>先看有没有标准或现成的模型可用；在尽可能大的范围内保持一致，同时权衡复杂度并确保满足需求。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      机票比价 API 返回的航班数据如下。如何让它更好用、更可互操作？
+      <div class="code" data-lang="json"><pre>
+{
+  "flight": {
+    "number": "AF1234",
+    "departureAirport": 12345,
+    "departureTime": 1733063400,
+    "arrivalAirport": 67890,
+    "endTime": 1733073000
+  },
+  "class": 56,
+  "price": { "base": 150, "taxes": "50.00", "discount": 0.1 }
+}
+</pre></div>
+      <details class="ans"><summary>参考答案</summary>
+        ① 机场用内部数字 ID → 换成标准的 IATA 代码（<code>"CDG"</code>），并附上名称和城市。
+        ② 时间戳 → ISO 8601（航班时刻对旅客来说是当地时间，这里适合带时区偏移）。
+        ③ <code>departureTime</code> 与 <code>endTime</code> 命名不一致 → <code>arrivalTime</code>；还可以把出发和到达各自归成对象 <code>departure: {airport, time}</code>、<code>arrival: {…}</code>。
+        ④ <code>"class": 56</code> 是看不懂的代码 → <code>"economy"</code>。
+        ⑤ 价格：<code>taxes</code> 是字符串而其他是数字，类型不一致；缺币种；消费者得自己算总价 → 加上 <code>total</code> 和 <code>currency</code>；<code>discount: 0.1</code> 含义不明（比例？金额？）。
+        ⑥ 加上处理过的数据，如飞行时长（<code>"PT2H40M"</code>）。
+      </details>
+    </li>
+    <li>
+      音频流媒体的「艺人」完整模型包含 <code>id</code>、<code>name</code>、<code>bio</code>、<code>genres</code>、<code>albums</code>（列表）、<code>tracks</code>（列表）。有该去掉的吗？
+      <details class="ans"><summary>参考答案</summary>
+        <code>tracks</code> 应去掉：一位艺人可能有成百上千首曲目，需要筛选和分页，应通过独立的操作获取。
+        <code>albums</code> 也类似，数量可能不少；可以去掉，或只保留少量有明确含义的子集（比如「最新专辑」）。<code>genres</code> 很短，保留。
+      </details>
+    </li>
+    <li>
+      图书馆 API 的「图书」数据：<code>{"bookReference":"B12345","title":"The Eternal Champion","authorCode":"A123","name":"Michael Moorcock","published_year":1970,"authDob":"1939-12-18"}</code>。列出命名和组织上的问题并修正。
+      <details class="ans"><summary>参考答案</summary>
+        问题：大小写风格混用（<code>published_year</code>）；<code>name</code> 是谁的名字不明确；<code>authDob</code> 是缩写；作者的三个属性散落各处；标识符命名不成模式。修正后：
+<div class="code" data-lang="json"><pre>
+{
+  "id": "B12345",
+  "title": "The Eternal Champion",
+  "publishedYear": 1970,
+  "author": {
+    "id": "A123",
+    "name": "Michael Moorcock",
+    "birthDate": "1939-12-18"
+  }
+}
+</pre></div>
+      </details>
+    </li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

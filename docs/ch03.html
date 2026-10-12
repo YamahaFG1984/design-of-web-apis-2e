@@ -1,0 +1,736 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 3 章 · 从 REST 视角观察操作 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="3">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 3 章</span>
+<h1>从 REST 视角观察操作</h1>
+<p class="lede">
+  上一章我们得到了一组用自然语言描述的操作，比如「搜索商品」。现在要把它们变成编程接口。
+  但别急着写 <code>GET /products</code> —— 先补上 HTTP 和 REST 的基础，然后换一副「REST 眼镜」重新审视这些操作：
+  它们操纵的是什么<strong>资源</strong>？对资源做了什么<strong>动作</strong>？需要什么<strong>输入</strong>，给出什么<strong>输出</strong>？
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>看懂一次 HTTP 请求/响应由哪几部分组成</li>
+    <li>分清「REST API」和「只是用了 HTTP 的 Web API」</li>
+    <li>知道设计接口的三个小步骤：观察 → 用 HTTP 表示 → 数据建模</li>
+    <li>会从操作描述里找出资源、资源之间的关系、动作</li>
+    <li>会把多个步骤的输入、成功、失败合并成与场景无关的输入列表和输出列表</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="http">HTTP 基础</h2>
+
+<p>
+  HTTP（超文本传输协议）是一个<strong>同步的「请求—响应」协议</strong>，它让客户端通过一组<strong>标准化的方法</strong>与<strong>资源</strong>交互。
+  资源可以是任何东西：一个 HTML 页面、一段视频、一份 PDF。最常用的两个方法是 <code>GET</code>（取）和 <code>POST</code>（送）。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="浏览器发送 GET /blog 请求，服务器返回 200 OK 和 HTML 内容">
+  <rect class="bx-b" x="20" y="50" width="170" height="170" rx="12"/>
+  <text class="ttl on-b" x="105" y="76" text-anchor="middle">HTTP 客户端</text>
+  <text class="sm" x="105" y="100" text-anchor="middle">浏览器</text>
+  <text class="sm" x="105" y="118" text-anchor="middle">curl 命令</text>
+  <text class="sm" x="105" y="136" text-anchor="middle">Python / TS / Java 程序</text>
+  <text class="sm" x="105" y="154" text-anchor="middle">手机 App …</text>
+  <text class="sm" x="105" y="200" text-anchor="middle">用什么技术都一样</text>
+
+  <rect class="bx-a" x="570" y="50" width="170" height="170" rx="12"/>
+  <text class="ttl on-a" x="655" y="76" text-anchor="middle">HTTP 服务器</text>
+  <text class="mono sm" x="655" y="100" text-anchor="middle">apihandyman.io</text>
+  <text class="sm" x="655" y="136" text-anchor="middle">静态文件服务器？</text>
+  <text class="sm" x="655" y="154" text-anchor="middle">WordPress？</text>
+  <text class="sm" x="655" y="200" text-anchor="middle">客户端不需要知道</text>
+
+  <path class="ln-b" d="M190 96 H568" marker-end="url(#ar-b)"/>
+  <rect class="bx" x="262" y="36" width="236" height="48" rx="8"/>
+  <text class="mono on-b" x="278" y="66" font-weight="700">GET</text>
+  <text class="mono" x="316" y="66">/blog</text>
+  <text class="sm" x="290" y="26" text-anchor="middle">HTTP 方法</text>
+  <path class="ln-d" d="M290 30 V52"/>
+  <text class="sm" x="400" y="26" text-anchor="middle">标识资源的路径</text>
+  <path class="ln-d" d="M360 30 L336 54"/>
+  <text class="lbl" x="380" y="112" text-anchor="middle">「请把 /blog 这个资源给我」</text>
+
+  <path class="ln-g" d="M568 176 H192" marker-end="url(#ar-g)"/>
+  <rect class="bx" x="262" y="186" width="236" height="66" rx="8"/>
+  <text class="mono on-g" x="278" y="208" font-weight="700">200 OK</text>
+  <text class="mono sm" x="278" y="226">&lt;html&gt; … &lt;h1&gt;Overcoming …</text>
+  <text class="mono sm" x="278" y="242">&lt;/html&gt;</text>
+  <text class="sm" x="506" y="208">HTTP 状态</text>
+  <text class="sm" x="506" y="234">资源内容</text>
+  <text class="lbl" x="380" y="166" text-anchor="middle">「好的，给你」</text>
+</svg>
+<figcaption>图 3-1　加载网页时发生的事：方法 + 路径 → 状态 + 内容</figcaption>
+</figure>
+
+<p>任何编程语言都能说 HTTP。下面三段代码做的事和在终端里敲 <code>curl https://apihandyman.io/blog</code> 完全一样：</p>
+
+<div class="tabs" data-title="取回一个网页">
+<div class="code" data-lang="python">
+<pre>
+import requests
+
+page = requests.get("https://apihandyman.io/blog")
+print(page.status_code)  # 200
+print(page.text)         # &lt;html&gt; ...
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const page = await fetch("https://apihandyman.io/blog");
+console.log(page.status);        // 200
+console.log(await page.text());  // &lt;html&gt; ...
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+var client = HttpClient.newHttpClient();
+var request = HttpRequest.newBuilder(URI.create("https://apihandyman.io/blog")).GET().build();
+var page = client.send(request, HttpResponse.BodyHandlers.ofString());
+
+System.out.println(page.statusCode());  // 200
+System.out.println(page.body());        // &lt;html&gt; ...
+</pre>
+</div>
+</div>
+
+<h2 id="rest">REST API 基础</h2>
+
+<p>
+  目前可以把 REST API 理解为：<strong>充分使用 HTTP 并且尊重其语义的 Web API</strong>（它其实不止于此，第 4 章末尾再讲）。
+  调用一个 REST API 和加载一个网页在 HTTP 层面一模一样，区别只有两点：
+</p>
+
+<ul>
+  <li>资源不再是 HTML、CSS 这类「网页资源」，而是一个<strong>业务概念</strong>，比如「商品」；</li>
+  <li>返回的不是 HTML，而是<strong>结构化数据</strong>（通常是 JSON，第 5 章讲）。</li>
+</ul>
+
+<div class="code" data-lang="http" data-file="调用「在线购物」API 搜索商品">
+<pre>
+GET /products HTTP/1.1
+Host: api.shp.ng
+
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[
+  { "id": 12345, "name": "Cowboy Bebop", "type": "BD" },
+  { "id": 12346, "name": "Macross",      "type": "BD" }
+]
+</pre>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 像不像面向对象？</div>
+  <p>
+    HTTP 的「资源 + 方法」模型很像 OOP 里的「对象 + 方法」。
+    区别在于：对象可以随便定义方法，而 HTTP 只有<strong>有限的几个标准方法</strong>。这个限制正是它的力量所在 —— 后面会体会到。
+  </p>
+</div>
+
+<h3>不遵守 HTTP 语义的 Web API</h3>
+
+<p>所有 Web API 都用 HTTP，但不是都尊重 HTTP 的语义。对比一下「删除一个不存在的商品 123」：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 220" role="img" aria-label="REST API 用 DELETE 方法并返回 404，而不遵守 HTTP 语义的 API 用 GET 方法并返回带错误信息的 200">
+  <rect class="bx-g" x="20" y="20" width="350" height="180" rx="12"/>
+  <text class="ttl on-g" x="195" y="46" text-anchor="middle">REST API：尊重 HTTP 语义</text>
+  <rect class="bx" x="40" y="62" width="310" height="36" rx="6"/>
+  <text class="mono on-g" x="54" y="85" font-weight="700">DELETE</text><text class="mono" x="112" y="85">/products/123</text>
+  <text class="sm" x="195" y="118" text-anchor="middle">&#8595;</text>
+  <rect class="bx" x="40" y="126" width="310" height="36" rx="6"/>
+  <text class="mono on-g" x="54" y="149" font-weight="700">404 Not Found</text>
+  <text class="sm" x="195" y="184" text-anchor="middle">用删除方法来删除，用错误状态表示错误</text>
+
+  <rect class="bx-r" x="390" y="20" width="350" height="180" rx="12"/>
+  <text class="ttl on-r" x="565" y="46" text-anchor="middle">不遵守 HTTP 语义的 Web API</text>
+  <rect class="bx" x="410" y="62" width="310" height="36" rx="6"/>
+  <text class="mono on-r" x="424" y="85" font-weight="700">GET</text><text class="mono" x="458" y="85">/deleteProduct/123</text>
+  <text class="sm" x="565" y="118" text-anchor="middle">&#8595;</text>
+  <rect class="bx" x="410" y="126" width="310" height="36" rx="6"/>
+  <text class="mono on-r" x="424" y="149" font-weight="700">200 OK</text><text class="mono sm" x="486" y="149">{ "error": "Not found" }</text>
+  <text class="sm" x="565" y="184" text-anchor="middle">用「读取」方法来删除，用「成功」状态报错</text>
+</svg>
+<figcaption>图 3-2　右边这种 API 常被作者误称为「REST」，仅仅因为它用了 HTTP</figcaption>
+</figure>
+
+<p>
+  这种差别不是洁癖。看看消费者的代码：遵守语义时，HTTP 客户端库、缓存、网关、监控都能<em>自动</em>理解发生了什么；
+  不遵守时，每个调用点都要自己拆开响应体猜。
+</p>
+
+<div class="tabs" data-title="消费者处理「不存在」的两种写法">
+<div class="code" data-lang="python">
+<pre>
+import httpx
+api = httpx.Client(base_url="https://api.shp.ng")
+
+# ✓ REST：状态码就是答案，任何 HTTP 工具都看得懂
+r = api.delete("/products/123")
+if r.status_code == 404:
+    print("商品不存在")
+r.raise_for_status()          # 其他错误统一抛异常
+
+# ✗ 非标准：永远是 200，只能去响应体里翻
+r = api.get("/deleteProduct/123")
+body = r.json()
+if "error" in body:           # 字段叫 error？err？message？每个接口都可能不一样
+    print("好像失败了：", body["error"])
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const base = "https://api.shp.ng";
+
+// ✓ REST：状态码就是答案，任何 HTTP 工具都看得懂
+const r1 = await fetch(`${base}/products/123`, { method: "DELETE" });
+if (r1.status === 404) console.log("商品不存在");
+else if (!r1.ok) throw new Error(`HTTP ${r1.status}`);
+
+// ✗ 非标准：永远是 200，只能去响应体里翻
+const r2 = await fetch(`${base}/deleteProduct/123`);
+const body = await r2.json();
+if ("error" in body) {        // 字段叫 error？err？message？每个接口都可能不一样
+  console.log("好像失败了：", body.error);
+}
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+RestClient api = RestClient.create("https://api.shp.ng");
+
+// ✓ REST：状态码就是答案，框架自动把 4xx 变成对应的异常
+try {
+    api.delete().uri("/products/123").retrieve().toBodilessEntity();
+} catch (HttpClientErrorException.NotFound e) {
+    System.out.println("商品不存在");
+}
+
+// ✗ 非标准：永远是 200，只能去响应体里翻
+Map&lt;String, Object&gt; body = api.get().uri("/deleteProduct/123")
+    .retrieve().body(new ParameterizedTypeReference&lt;&gt;() {});
+if (body.containsKey("error")) {   // 字段叫 error？err？message？每个接口都可能不一样
+    System.out.println("好像失败了：" + body.get("error"));
+}
+</pre>
+</div>
+</div>
+
+<h2 id="how">设计 REST 接口的三个小步骤</h2>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 290" role="img" aria-label="设计编程接口分三步：从 REST 视角观察操作、用 HTTP 表示操作、对数据建模">
+  <rect class="bx" x="20" y="24" width="150" height="50" rx="10"/>
+  <text class="ttl" x="95" y="46" text-anchor="middle">API 能力画布</text>
+  <text class="mono sm" x="95" y="64" text-anchor="middle">「搜索商品」</text>
+  <path class="ln" d="M95 74 V100" marker-end="url(#ar)"/>
+
+  <rect class="bx-a" x="20" y="102" width="226" height="170" rx="12"/>
+  <text class="ttl on-a" x="133" y="128" text-anchor="middle">① 从 REST 视角观察</text>
+  <text class="sm" x="133" y="146" text-anchor="middle">本章 · 仍用自然语言</text>
+  <rect class="bx" x="36" y="158" width="92" height="28" rx="6"/><text x="82" y="177" text-anchor="middle">资源：目录</text>
+  <rect class="bx" x="138" y="158" width="92" height="28" rx="6"/><text x="184" y="177" text-anchor="middle">动作：搜索</text>
+  <rect class="bx" x="36" y="194" width="194" height="28" rx="6"/><text x="133" y="213" text-anchor="middle">关系：目录包含多个商品</text>
+  <rect class="bx" x="36" y="230" width="92" height="28" rx="6"/><text x="82" y="249" text-anchor="middle">输入</text>
+  <rect class="bx" x="138" y="230" width="92" height="28" rx="6"/><text x="184" y="249" text-anchor="middle">成功/失败输出</text>
+
+  <path class="ln-a" d="M246 187 H266" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-b" x="268" y="102" width="226" height="170" rx="12"/>
+  <text class="ttl on-b" x="381" y="128" text-anchor="middle">② 用 HTTP 表示</text>
+  <text class="sm" x="381" y="146" text-anchor="middle">第 4 章</text>
+  <rect class="bx" x="284" y="158" width="194" height="28" rx="6"/><text class="mono" x="381" y="177" text-anchor="middle">路径 /products</text>
+  <rect class="bx" x="284" y="194" width="92" height="28" rx="6"/><text class="mono" x="330" y="213" text-anchor="middle">方法 GET</text>
+  <rect class="bx" x="386" y="194" width="92" height="28" rx="6"/><text class="mono" x="432" y="213" text-anchor="middle">状态 200</text>
+  <rect class="bx" x="284" y="230" width="194" height="28" rx="6"/><text x="381" y="249" text-anchor="middle">数据放在请求/响应的哪里</text>
+
+  <path class="ln-b" d="M494 187 H514" marker-end="url(#ar-b)"/>
+
+  <rect class="bx-g" x="516" y="102" width="226" height="170" rx="12"/>
+  <text class="ttl on-g" x="629" y="128" text-anchor="middle">③ 数据建模</text>
+  <text class="sm" x="629" y="146" text-anchor="middle">第 5 章</text>
+  <rect class="bx" x="532" y="158" width="194" height="100" rx="6"/>
+  <text class="mono" x="546" y="180">{</text>
+  <text class="mono" x="546" y="198">  price: number</text>
+  <text class="mono" x="546" y="216">  category: string</text>
+  <text class="mono" x="546" y="234">}</text>
+  <text class="sm" x="629" y="252" text-anchor="middle">选数据、起名、定类型、组织结构</text>
+</svg>
+<figcaption>图 3-3　把关注点分开：先认清「是什么」，再决定「HTTP 上长什么样」，最后细化数据</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 为什么识别能力时不直接想 HTTP</div>
+  <p>
+    有经验的人一眼就能把「搜索目录」翻译成 <code>GET /products</code>，但这种本能会带偏思路。
+    例如给图书馆设计 API，如果满脑子 HTTP，很容易只想到 <code>GET /books</code>、<code>GET /books/{bookId}</code>，
+    接着顺手加个 <code>DELETE /books/{bookId}</code> —— 可「删除一本书」在图书馆里有意义吗？
+    一本书的多个副本怎么办？「借书」是个动作而不是名词，又该怎么表示？
+    先不带 HTTP 滤镜把能力找全，才能既满足需求，又有足够的信息来回答这些问题。
+  </p>
+</div>
+
+<h2 id="pivot">准备工作：按操作重排画布</h2>
+
+<p>
+  本章用上一章「在线购物」例子里的一个子集，它恰好覆盖了五种最典型的操作：
+  搜索、创建、读取、更新、删除 —— 后四个常被合称 <strong>CRUD</strong>（Create / Read / Update / Delete，Read 也涵盖搜索）。
+</p>
+
+<p>
+  画布原本按用例组织，同一个操作散落在多个步骤里。用电子表格的<strong>透视表</strong>（把「操作」列放最前面），或者直接按操作筛选，得到下面的视图：
+</p>
+
+<div class="tw">
+<table>
+  <tr><th>操作</th><th>输入</th><th>成功</th><th>失败</th><th>步骤（用例 / 用户）</th></tr>
+  <tr><td rowspan="2"><strong>搜索商品</strong></td><td>目录、筛选条件</td><td>匹配筛选条件的商品</td><td>没有找到商品</td><td>搜索要买的商品（购买 / 最终用户）</td></tr>
+  <tr><td>目录、特征</td><td>没有找到商品</td><td>找到了特征匹配的商品</td><td>查找相似商品（填充目录 / 管理员）</td></tr>
+  <tr><td rowspan="2"><strong>获取商品详情</strong></td><td>选中的商品</td><td>商品信息</td><td>商品不存在</td><td>查看商品详细信息（购买 / 最终用户）</td></tr>
+  <tr><td>找到的商品</td><td>商品信息</td><td>商品不存在</td><td>确认商品是否不同（填充目录 / 管理员）</td></tr>
+  <tr><td><strong>把商品加入目录</strong></td><td>商品、目录</td><td>商品已在目录中</td><td>商品信息有误（未加入）</td><td>把商品加入目录（填充目录 / 管理员）</td></tr>
+  <tr><td><strong>修改商品</strong></td><td>选中的商品、修改后的信息</td><td>商品已更新</td><td>商品不存在</td><td>修改商品信息（填充目录 / 管理员）</td></tr>
+  <tr><td><strong>从目录移除商品</strong></td><td>选中的商品</td><td>商品已移除</td><td>商品不存在</td><td>从目录移除商品（填充目录 / 管理员）</td></tr>
+</table>
+</div>
+
+<p>
+  注意「搜索商品」那两行：同一个操作，在两个场景里的成功和失败是<strong>反过来</strong>的。这个矛盾后面要解决。
+  接下来的发现会记在两张新表里：<strong>资源表</strong>（资源、关系）和<strong>操作表</strong>（操作、资源、动作、输入、输出）。
+</p>
+
+<h2 id="resources">识别资源与关系</h2>
+
+<h3>什么是资源</h3>
+
+<p>
+  在 REST API 里，资源首先是一个与领域相关的<strong>业务概念</strong>，用一个名词或简短的领域术语来称呼。判断标准：
+</p>
+
+<ul>
+  <li>它能<strong>独立存在</strong>，可以被单独操纵；</li>
+  <li>它不同于它的<strong>属性</strong> —— 属性是组成它的小块数据，不能独立存在。</li>
+</ul>
+
+<p>
+  「商品」是资源；商品的「名称」是属性。有些东西介于两者之间：「价格」通常是商品的属性，但如果业务需要追踪价格的历史变化，它也可能需要被当作资源。
+  资源大致相当于面向对象里的一个<strong>类</strong>。
+</p>
+
+<h3>怎么找：看主要动词作用在谁身上</h3>
+
+<p>
+  操作描述里的<strong>主要动词的宾语</strong>通常就是资源，再用输入、成功、失败来印证。
+  「修改商品」→ 动词「修改」作用于「商品」；输入、成功、失败也都只提到商品 → 资源是<strong>商品</strong>。
+</p>
+
+<p>拿不准时，把描述<strong>缩短</strong>或<strong>扩写</strong>：</p>
+
+<div class="tw">
+<table>
+  <tr><th>操作描述</th><th>改写</th><th>资源</th></tr>
+  <tr><td>把商品加入目录</td><td>缩短 →「加入<u>目录</u>」。成功与否讲的也是「是否进了目录」</td><td><span class="tag-b">目录</span></td></tr>
+  <tr><td>从目录移除商品</td><td>缩短 →「移除<u>商品</u>」。输入和结果都只关心商品</td><td><span class="tag-g">商品</span></td></tr>
+  <tr><td>搜索商品</td><td>扩写 →「在目录中搜索匹配条件的商品」→ 再缩短 →「在<u>目录</u>中搜索」</td><td><span class="tag-b">目录</span></td></tr>
+  <tr><td>获取商品详情</td><td>「获取」作用于「商品详情」</td><td><span class="tag-g">商品</span></td></tr>
+  <tr><td>修改商品</td><td>「修改」作用于「商品」</td><td><span class="tag-g">商品</span></td></tr>
+</table>
+</div>
+
+<div class="box key">
+  <div class="t">&#9733; 一条好用的规律</div>
+  <p>
+    <strong>读取 / 更新 / 删除</strong>某个元素时，资源是<strong>元素本身</strong>。<br>
+    <strong>创建（加入）/ 列出 / 搜索</strong>元素时，资源是元素的<strong>容器</strong>。
+  </p>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="目录资源包含多个商品资源；添加和搜索作用于目录，获取、修改、移除作用于单个商品">
+  <!-- catalog container -->
+  <rect class="bx-b" x="230" y="30" width="300" height="210" rx="14"/>
+  <text class="ttl on-b" x="380" y="56" text-anchor="middle">目录（容器资源）</text>
+
+  <rect class="bx-g" x="256" y="76" width="112" height="44" rx="8"/>
+  <text class="on-g" x="312" y="103" text-anchor="middle">商品</text>
+  <rect class="bx-g" x="392" y="76" width="112" height="44" rx="8"/>
+  <text class="on-g" x="448" y="103" text-anchor="middle">商品</text>
+  <rect class="bx-g" x="256" y="136" width="112" height="44" rx="8"/>
+  <text class="on-g" x="312" y="163" text-anchor="middle">商品</text>
+  <rect class="bx-d" x="392" y="136" width="112" height="44" rx="8"/>
+  <text class="sm" x="448" y="163" text-anchor="middle">……</text>
+  <text class="sm" x="380" y="208" text-anchor="middle">目录 <tspan font-weight="700">包含多个</tspan> 商品</text>
+  <text class="sm" x="380" y="226" text-anchor="middle">商品 <tspan font-weight="700">属于</tspan> 目录</text>
+
+  <!-- container actions -->
+  <rect class="bx" x="20" y="60" width="150" height="40" rx="8"/>
+  <text x="95" y="85" text-anchor="middle">添加（商品到目录）</text>
+  <rect class="bx" x="20" y="130" width="150" height="40" rx="8"/>
+  <text x="95" y="155" text-anchor="middle">搜索（目录里的商品）</text>
+  <path class="ln-b" d="M170 80 H228" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M170 150 H228" marker-end="url(#ar-b)"/>
+  <text class="sm on-b" x="95" y="200" text-anchor="middle">作用于容器</text>
+
+  <!-- element actions -->
+  <rect class="bx" x="600" y="46" width="140" height="36" rx="8"/>
+  <text x="670" y="69" text-anchor="middle">获取（商品详情）</text>
+  <rect class="bx" x="600" y="96" width="140" height="36" rx="8"/>
+  <text x="670" y="119" text-anchor="middle">修改（商品）</text>
+  <rect class="bx" x="600" y="146" width="140" height="36" rx="8"/>
+  <text x="670" y="169" text-anchor="middle">移除（商品）</text>
+  <path class="ln-g" d="M600 64 C560 64 540 90 506 96" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M600 114 C570 114 540 102 506 100" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M600 164 C560 164 540 110 506 104" marker-end="url(#ar-g)"/>
+  <text class="sm on-g" x="670" y="208" text-anchor="middle">作用于单个元素</text>
+</svg>
+<figcaption>图 3-4　五个操作只涉及两个资源。一个操作只操纵一个资源；一个资源可以被多个操作操纵</figcaption>
+</figure>
+
+<div class="box note">
+  <div class="t">&#9432; 嵌套资源</div>
+  <p>
+    如果怎么改写都定不下来，可能遇到了嵌套（层级）资源。
+    「把新商品加入<em>某商家的</em>目录」可以缩成「加入商家的目录」，但缩不成「加入目录」—— 资源是「商家的目录」。
+  </p>
+</div>
+
+<h3>识别关系</h3>
+
+<p>
+  借助领域知识和画布上的信息找出资源之间的关系。大多数关系最后都能表述成「<strong>X 属于 Y</strong>」或「<strong>Y 包含 X</strong>」。
+  这和设计类或数据库表很像，可以用你熟悉的方法 —— 但别被现有代码或表结构牵着走（第 2 章的「暴露提供者内部」）。
+</p>
+
+<h2 id="actions">识别动作</h2>
+
+<p>
+  <strong>动作就是操作描述里的那个主要动词</strong> —— 找资源时已经顺便找到了。
+</p>
+
+<div class="tw">
+<table>
+  <tr><th>操作</th><th>资源</th><th>动作</th></tr>
+  <tr><td><u>添加</u>商品到目录</td><td>目录</td><td>添加</td></tr>
+  <tr><td>（在目录中）<u>搜索</u>商品</td><td>目录</td><td>搜索</td></tr>
+  <tr><td><u>获取</u>商品详情</td><td>商品</td><td>获取</td></tr>
+  <tr><td><u>修改</u>商品</td><td>商品</td><td>修改</td></tr>
+  <tr><td>从目录<u>移除</u>商品</td><td>商品</td><td>移除</td></tr>
+</table>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 别抢跑</div>
+  <p>
+    保留描述里的原始动词，不要现在就换成 CRUD 动词或 HTTP 方法。
+    一旦学会把动作映射到 HTTP 方法（下一章），你会很想直接写「POST」「GET」—— 忍住。有些动作并不能干净地对应到某个方法，过早替换会丢信息。
+  </p>
+</div>
+
+<h2 id="inputs">列出动作的输入</h2>
+
+<p>
+  一个操作的输入 = 所有用到它的步骤的输入，<strong>合并</strong>后用<strong>与场景无关</strong>的方式重新描述（和提炼操作时同一个思路）。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 250" role="img" aria-label="两个步骤的输入「选中的商品」和「找到的商品」合并为与场景无关的「商品引用」">
+  <text class="ttl" x="20" y="22">步骤的输入（带场景）</text>
+  <rect class="bx" x="20" y="36" width="250" height="52" rx="8"/>
+  <text x="34" y="58">查看商品详细信息</text><text class="sm" x="34" y="76">输入：<tspan font-weight="700">选中的</tspan>商品</text>
+  <rect class="bx" x="20" y="98" width="250" height="52" rx="8"/>
+  <text x="34" y="120">确认商品是否不同</text><text class="sm" x="34" y="138">输入：<tspan font-weight="700">找到的</tspan>商品</text>
+
+  <path class="ln-a" d="M270 62 C340 62 340 90 408 92" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M270 124 C340 124 340 98 408 96" marker-end="url(#ar-a)"/>
+
+  <text class="ttl" x="410" y="22">动作的输入（与场景无关）</text>
+  <rect class="bx-a" x="410" y="64" width="330" height="60" rx="10"/>
+  <text class="ttl on-a" x="575" y="90" text-anchor="middle">获取（商品）　输入：商品引用</text>
+  <text class="sm" x="575" y="110" text-anchor="middle">问领域专家：你们平时用什么来指明「某一件商品」？</text>
+
+  <path class="ln-d" d="M20 170 H740"/>
+
+  <rect class="bx" x="20" y="186" width="250" height="52" rx="8"/>
+  <text x="34" y="208">把商品加入目录</text><text class="sm" x="34" y="226">输入：商品（用户）、目录（API）</text>
+  <path class="ln-a" d="M270 212 H408" marker-end="url(#ar-a)"/>
+  <rect class="bx-a" x="410" y="186" width="330" height="52" rx="10"/>
+  <text class="ttl on-a" x="575" y="208" text-anchor="middle">添加（到目录）　输入：商品信息</text>
+  <text class="sm" x="575" y="226" text-anchor="middle">「目录」就是操作的资源本身，且只有一个 → 不算输入</text>
+</svg>
+<figcaption>图 3-5　合并输入并去掉场景修饰语；操作的资源本身通常不出现在输入里</figcaption>
+</figure>
+
+<ul>
+  <li>「选中的商品」和「找到的商品」本质都是「指明某一件商品」→ 合并为<strong>商品引用</strong>。</li>
+  <li>「修改后的信息」写得更明确些 → <strong>修改后的商品信息</strong>。</li>
+  <li>「把商品加入目录」的输入「商品」改叫<strong>商品信息</strong>，避免和「商品」这个资源混淆。</li>
+  <li>「搜索商品」两个步骤的「筛选条件」和「特征」都是搜索条件 → 合并为<strong>筛选条件</strong>。</li>
+</ul>
+
+<div class="box tip">
+  <div class="t">&#128161; 资源本身什么时候是输入</div>
+  <p>
+    操作的资源通常不算输入。但如果它有<strong>多个实例</strong>，就需要一个引用来指明是哪一个。
+    比如系统里有多个目录，「添加到目录」就得加上「目录引用」—— 并且你刚刚发现了一个新用例「管理目录」需要回头分析。
+    本例与领域专家确认后，决定只有一个目录。
+  </p>
+</div>
+
+<p>此时不需要细节，「商品信息」里有哪些字段留到第 5 章；分页、筛选相关的参数漏了也没关系，第 13 章会系统处理。</p>
+
+<h2 id="outputs">列出动作的输出</h2>
+
+<p>
+  每个动作有<strong>一张</strong>输出列表，把成功和失败都放进去。每一项包含：<strong>描述</strong>、<strong>类型</strong>（成功 / 错误）、<strong>数据</strong>（可以没有）。
+  同样要合并各步骤并去掉场景色彩。
+</p>
+
+<h3>解决矛盾：成功还是失败由操作本身决定</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="同一个搜索操作在两个场景中成功与失败的含义相反，在操作层面两种结果都是成功">
+  <rect class="bx" x="20" y="24" width="290" height="84" rx="10"/>
+  <text class="ttl" x="165" y="46" text-anchor="middle">场景 A：搜索要买的商品</text>
+  <text class="sm on-g" x="165" y="68" text-anchor="middle">找到商品 = 成功</text>
+  <text class="sm on-r" x="165" y="88" text-anchor="middle">没找到 = 失败</text>
+
+  <rect class="bx" x="20" y="130" width="290" height="84" rx="10"/>
+  <text class="ttl" x="165" y="152" text-anchor="middle">场景 B：入库前查重</text>
+  <text class="sm on-g" x="165" y="174" text-anchor="middle">没找到 = 成功（可以放心添加）</text>
+  <text class="sm on-r" x="165" y="194" text-anchor="middle">找到相似商品 = 失败（重复了）</text>
+
+  <path class="ln-a" d="M310 66 C370 66 370 112 426 116" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M310 172 C370 172 370 126 426 122" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-a" x="428" y="44" width="312" height="150" rx="12"/>
+  <text class="ttl on-a" x="584" y="70" text-anchor="middle">搜索（目录）的输出 · 与场景无关</text>
+  <rect class="bx-g" x="444" y="84" width="280" height="42" rx="8"/>
+  <text class="on-g" x="456" y="102" font-weight="700">成功</text><text x="496" y="102">找到匹配的商品</text>
+  <text class="sm" x="496" y="118">数据：商品信息列表</text>
+  <rect class="bx-g" x="444" y="134" width="280" height="42" rx="8"/>
+  <text class="on-g" x="456" y="152" font-weight="700">成功</text><text x="496" y="152">没有匹配的商品</text>
+  <text class="sm" x="496" y="168">数据：无（空列表）</text>
+  <text class="sm" x="584" y="226" text-anchor="middle">怎么解读这个结果，是消费者自己的事</text>
+</svg>
+<figcaption>图 3-6　记住这个模式：搜索和列表操作在一无所获时<strong>不报错</strong></figcaption>
+</figure>
+
+<p>
+  一个操作的输出算成功还是错误，必须<strong>独立于用例和消费者</strong>，只取决于操作的性质、输入输出数据和领域本身。
+  同理，读取一件库存为零的商品，对想买它的顾客是坏消息，对想确认它已下架的管理员是好消息 —— 但操作的输出在两种情况下都是「成功，返回商品信息」。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 别把苹果和橘子混在一起</div>
+  <p>
+    如果一个操作返回了性质不同的东西（尤其在列表里），往往说明操作或数据识别错了。
+    返回「书」和「牙刷」？可以统一为「商品」。返回「商品」和「供应商」？多半应该拆成两个操作。
+    （不过，商品详情里带一份供应商摘要是合理的。）
+  </p>
+</div>
+
+<h3>完成的操作表</h3>
+
+<div class="tw">
+<table>
+  <tr><th>操作</th><th>资源</th><th>动作</th><th>输入</th><th>输出：描述</th><th>类型</th><th>数据</th></tr>
+  <tr><td rowspan="2">把商品加入目录</td><td rowspan="2">目录</td><td rowspan="2">添加</td><td rowspan="2">商品信息</td><td>商品已加入目录</td><td><span class="tag-g">成功</span></td><td>—</td></tr>
+  <tr><td>商品信息有误</td><td><span class="tag-r">错误</span></td><td>—</td></tr>
+  <tr><td rowspan="2">搜索商品</td><td rowspan="2">目录</td><td rowspan="2">搜索</td><td rowspan="2">筛选条件</td><td>找到匹配的商品</td><td><span class="tag-g">成功</span></td><td>商品信息列表</td></tr>
+  <tr><td>没有匹配的商品</td><td><span class="tag-g">成功</span></td><td>—</td></tr>
+  <tr><td rowspan="2">获取商品详情</td><td rowspan="2">商品</td><td rowspan="2">获取</td><td rowspan="2">商品引用</td><td>找到商品</td><td><span class="tag-g">成功</span></td><td>商品信息</td></tr>
+  <tr><td>商品不存在</td><td><span class="tag-r">错误</span></td><td>—</td></tr>
+  <tr><td rowspan="2">修改商品</td><td rowspan="2">商品</td><td rowspan="2">修改</td><td rowspan="2">商品引用、<br>修改后的商品信息</td><td>商品已修改</td><td><span class="tag-g">成功</span></td><td>—</td></tr>
+  <tr><td>商品不存在</td><td><span class="tag-r">错误</span></td><td>—</td></tr>
+  <tr><td rowspan="2">从目录移除商品</td><td rowspan="2">商品</td><td rowspan="2">移除</td><td rowspan="2">商品引用</td><td>商品已移除</td><td><span class="tag-g">成功</span></td><td>—</td></tr>
+  <tr><td>商品不存在</td><td><span class="tag-r">错误</span></td><td>—</td></tr>
+</table>
+</div>
+
+<h3>把这张表写成代码</h3>
+
+<p>
+  既然资源像类、动作像方法，那这张操作表其实就是一组<strong>接口签名</strong>。
+  下面把它翻译成三种语言 —— 这不是 API 的实现，只是帮你用程序员熟悉的方式再看一遍「资源 / 动作 / 输入 / 输出」：
+</p>
+
+<div class="tabs" data-title="操作表 = 接口签名">
+<div class="code" data-lang="python">
+<pre>
+from dataclasses import dataclass
+from typing import Protocol
+
+@dataclass
+class ProductInfo: ...        # 商品信息：里面有什么字段，第 5 章再定
+@dataclass
+class Filters: ...            # 筛选条件
+ProductRef = str              # 商品引用
+
+class ProductNotFound(Exception): ...     # 错误输出
+class WrongProductInfo(Exception): ...    # 错误输出
+
+
+class Catalog(Protocol):
+    """资源：目录（容器）"""
+
+    def add(self, info: ProductInfo) -&gt; None:
+        """动作：添加。成功：商品已加入目录；错误：WrongProductInfo"""
+
+    def search(self, filters: Filters) -&gt; list[ProductInfo]:
+        """动作：搜索。找到或没找到都是成功 —— 没找到就返回空列表，不抛异常"""
+
+
+class Product(Protocol):
+    """资源：商品（元素），由 ProductRef 指明是哪一个"""
+
+    def get(self, ref: ProductRef) -&gt; ProductInfo:
+        """动作：获取。错误：ProductNotFound"""
+
+    def modify(self, ref: ProductRef, modified: ProductInfo) -&gt; None:
+        """动作：修改。错误：ProductNotFound"""
+
+    def remove(self, ref: ProductRef) -&gt; None:
+        """动作：移除。错误：ProductNotFound"""
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+type ProductInfo = { /* 商品信息：里面有什么字段，第 5 章再定 */ };
+type Filters = { /* 筛选条件 */ };
+type ProductRef = string;      // 商品引用
+
+// 输出 = 成功或错误，各带一段描述和可选的数据
+type Output&lt;Data = undefined&gt; =
+  | { type: "success"; description: string; data: Data }
+  | { type: "error"; description: string };
+
+/** 资源：目录（容器） */
+interface Catalog {
+  /** 动作：添加。成功：商品已加入目录；错误：商品信息有误 */
+  add(info: ProductInfo): Output;
+
+  /** 动作：搜索。找到或没找到都是成功 —— 没找到时 data 是空数组 */
+  search(filters: Filters): Output&lt;ProductInfo[]&gt;;
+}
+
+/** 资源：商品（元素），由 ProductRef 指明是哪一个 */
+interface Product {
+  /** 动作：获取。错误：商品不存在 */
+  get(ref: ProductRef): Output&lt;ProductInfo&gt;;
+
+  /** 动作：修改。错误：商品不存在 */
+  modify(ref: ProductRef, modified: ProductInfo): Output;
+
+  /** 动作：移除。错误：商品不存在 */
+  remove(ref: ProductRef): Output;
+}
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+record ProductInfo() {}       // 商品信息：里面有什么字段，第 5 章再定
+record Filters() {}           // 筛选条件
+record ProductRef(String value) {}   // 商品引用
+
+class ProductNotFoundException extends RuntimeException {}    // 错误输出
+class WrongProductInfoException extends RuntimeException {}   // 错误输出
+
+/** 资源：目录（容器） */
+interface Catalog {
+    /** 动作：添加。成功：商品已加入目录；错误：WrongProductInfoException */
+    void add(ProductInfo info);
+
+    /** 动作：搜索。找到或没找到都是成功 —— 没找到就返回空列表，不抛异常 */
+    List&lt;ProductInfo&gt; search(Filters filters);
+}
+
+/** 资源：商品（元素），由 ProductRef 指明是哪一个 */
+interface Product {
+    /** 动作：获取。错误：ProductNotFoundException */
+    ProductInfo get(ProductRef ref);
+
+    /** 动作：修改。错误：ProductNotFoundException */
+    void modify(ProductRef ref, ProductInfo modified);
+
+    /** 动作：移除。错误：ProductNotFoundException */
+    void remove(ProductRef ref);
+}
+</pre>
+</div>
+</div>
+
+<p>
+  下一章要做的事情，就是把这些「方法签名」换成 HTTP 的表达方式：
+  类名变成<strong>路径</strong>，方法名变成有限的几个 <strong>HTTP 方法</strong>，返回值和异常变成<strong>状态码</strong>。
+</p>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>HTTP 是同步的请求—响应协议，通过标准化的方法与资源交互；资源可以是任何东西。</li>
+  <li>REST API 充分使用 HTTP 并尊重其语义。</li>
+  <li>设计 REST 接口分三步：从 REST 视角观察操作 → 用 HTTP 表示 → 数据建模。</li>
+  <li>五种典型操作：搜索，以及创建、读取、更新、删除（CRUD）。</li>
+  <li>资源是能独立存在的业务概念，区别于它的属性。</li>
+  <li>一个操作只用一个资源；资源是操作描述中主要动词的作用对象。</li>
+  <li>创建/添加、列出/搜索时资源是容器；读取/更新/删除时资源是容器里的单个元素。</li>
+  <li>动作就是那个主要动词，保留原词，别急着换成 HTTP 方法。</li>
+  <li>输入列表合并各步骤的输入并去场景化；操作的资源本身不算输入，除非它有多个实例。</li>
+  <li>输出列表合并各步骤的成功与失败，每项有描述、类型、可选数据；类型要从与场景无关的角度判断。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      在线课程平台，教师可以：①开设一门新课程（含大纲、难度、主题列表）；②按主题或难度查找课程；③查看某门课程的信息；④修改课程的难度、大纲或主题。为每个操作找出资源、关系和动作。
+      <details class="ans"><summary>参考答案</summary>
+        资源有两个：<strong>课程目录</strong>（容器）和<strong>课程</strong>（元素），关系是「课程目录包含多门课程」。
+        ① 课程目录 / 开设（添加）；② 课程目录 / 查找；③ 课程 / 查看；④ 课程 / 修改。
+        大纲、难度、主题在这里是课程的属性，不是独立资源（除非业务上需要单独管理主题）。
+      </details>
+    </li>
+    <li>
+      航空出行 API：「搜索航班」在两个步骤中的输入分别是（机场、目的地、航班、出发日期）和（日期、航空公司、航班）；「预订航班」的输入是（航班、日期、乘客、航班）。每个操作的资源和真正的输入是什么？
+      <details class="ans"><summary>参考答案</summary>
+        搜索航班：资源是<strong>航班（集合）</strong>，它是操作的资源本身，不算输入；合并后的输入是「筛选条件」（出发机场、目的地、日期、航空公司）。
+        预订航班：换个说法是「添加一个预订」，资源是<strong>预订（集合）</strong>；输入是「航班引用」（指明哪个航班，通常已包含日期）和「乘客信息」。
+      </details>
+    </li>
+    <li>
+      健身应用的操作输出：①查看饮食计划日志和睡眠日志；②搜索教练；③列出训练历史和营养建议日志；④获取今日看板（今日训练、饮食以及昨晚睡眠的摘要）。哪些有问题？
+      <details class="ans"><summary>参考答案</summary>
+        ① 和 ③ 把不同性质的东西混在一个列表里（苹果和橘子），应各拆成两个操作。
+        ② 没问题。④ 也没问题：「今日看板」本身是一个有明确含义的业务概念，它包含几份<em>摘要</em>，就像商品详情里带供应商摘要一样。
+      </details>
+    </li>
+    <li>把本章的接口签名代码抄到你熟悉的语言里，为「管理订单」用例补上资源和动作（订单集合？单个订单？）。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,1033 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 6 章 · 用 OpenAPI 描述 HTTP 操作 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="6">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 6 章</span>
+<h1>用 OpenAPI 描述 HTTP 操作</h1>
+<p class="lede">
+  前几章我们把设计记在电子表格里。它够用，但没有任何工具读得懂它。
+  <strong>OpenAPI 规范</strong>是描述 REST API 的行业标准格式：人能读，机器也能读，文档、Mock、代码生成、网关配置都认它。
+  这一章学会用它把路径、方法、输入和输出写下来；数据模型留给下一章。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>知道 OpenAPI 是什么、它在整个 API 生命周期里能做什么</li>
+    <li>读得懂 YAML，并知道它和 JSON 的对应关系</li>
+    <li>分清「规范优先」和「代码优先」两种写法，知道各自的利弊</li>
+    <li>会写：最小文档 → 路径 → 路径参数 → 操作 → 查询参数 → 请求体 → 响应状态 → 响应体 → 响应头</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="what">OpenAPI 是什么</h2>
+
+<p>
+  <a href="https://www.openapis.org">OpenAPI 规范</a>（OpenAPI Specification）是一种开源的 API 描述格式。
+  一份 OpenAPI 文档记录了一个 API 的资源路径、HTTP 操作、输入、输出和数据模型（数据模型用 JSON Schema 来写，下一章讲）。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; OpenAPI 和 Swagger 是什么关系</div>
+  <p>
+    OpenAPI 的前身叫 Swagger 规范，最初是 Swagger 这套开源工具（生成文档和 SDK）自带的格式。
+    2015 年 Swagger 2.0 规范被捐给 Linux 基金会下的 OpenAPI Initiative，之后演进为 OpenAPI 3.0（2017）和 3.1（2021）。
+    现在「Swagger」是 SmartBear 公司的品牌名，指的是工具；格式本身叫 OpenAPI。
+  </p>
+  <p>
+    其他类型的 API 也有各自的描述格式：SOAP 用 WSDL，GraphQL 用 GraphQL Schema，gRPC 用 Protocol Buffers，异步 API 用 AsyncAPI。
+  </p>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 300" role="img" aria-label="一份 OpenAPI 文档在 API 生命周期各阶段的用途">
+  <rect class="bx-a" x="290" y="104" width="180" height="92" rx="14"/>
+  <text class="ttl on-a" x="380" y="134" text-anchor="middle">OpenAPI 文档</text>
+  <text class="mono sm" x="380" y="156" text-anchor="middle">openapi.yaml</text>
+  <text class="sm" x="380" y="176" text-anchor="middle">唯一的事实来源</text>
+
+  <rect class="bx" x="20" y="20" width="190" height="56" rx="10"/>
+  <text class="ttl" x="115" y="44" text-anchor="middle">设计</text>
+  <text class="sm" x="115" y="62" text-anchor="middle">结构化地思考、讨论、Lint 检查</text>
+
+  <rect class="bx" x="20" y="122" width="190" height="56" rx="10"/>
+  <text class="ttl" x="115" y="146" text-anchor="middle">Mock</text>
+  <text class="sm" x="115" y="164" text-anchor="middle">API 还没开发就能试调</text>
+
+  <rect class="bx" x="20" y="224" width="190" height="56" rx="10"/>
+  <text class="ttl" x="115" y="248" text-anchor="middle">开发</text>
+  <text class="sm" x="115" y="266" text-anchor="middle">生成服务端骨架代码</text>
+
+  <rect class="bx" x="550" y="20" width="190" height="56" rx="10"/>
+  <text class="ttl" x="645" y="44" text-anchor="middle">测试</text>
+  <text class="sm" x="645" y="62" text-anchor="middle">生成测试、契约校验、安全扫描</text>
+
+  <rect class="bx" x="550" y="122" width="190" height="56" rx="10"/>
+  <text class="ttl" x="645" y="146" text-anchor="middle">部署</text>
+  <text class="sm" x="645" y="164" text-anchor="middle">配置 API 网关</text>
+
+  <rect class="bx" x="550" y="224" width="190" height="56" rx="10"/>
+  <text class="ttl" x="645" y="248" text-anchor="middle">提供 / 消费</text>
+  <text class="sm" x="645" y="266" text-anchor="middle">发布文档、生成客户端 SDK</text>
+
+  <path class="ln-a" d="M290 124 C250 100 240 60 212 50" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M290 150 H212" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M290 176 C250 200 240 240 212 250" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M470 124 C510 100 520 60 548 50" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M470 150 H548" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M470 176 C510 200 520 240 548 250" marker-end="url(#ar-a)"/>
+</svg>
+<figcaption>图 6-1　OpenAPI 最常见的用途是生成文档，但它的价值远不止于此：它是各个环节、各种工具之间的桥梁</figcaption>
+</figure>
+
+<p>在<strong>设计阶段</strong>，OpenAPI 的好处尤其明显：</p>
+<ul>
+  <li>它提供了一个结构来引导你，减少遗漏和错误；</li>
+  <li>它有复用机制，同一个模型定义一次、到处引用；</li>
+  <li><strong>Linter</strong> 可以自动分析它、找出设计错误（第 18 章）；</li>
+  <li>文档工具能把它渲染成漂亮的页面，领域专家不用懂 OpenAPI 语法也能参与讨论；</li>
+  <li>用它一键生成 <strong>Mock</strong>，亲手调一下还没开发的 API，往往能暴露出纸面上看不出的问题（第 19 章）。</li>
+</ul>
+
+<div class="box tip">
+  <div class="t">&#128161; 找工具</div>
+  <p>官方工具目录在 <a href="https://tools.openapis.org">tools.openapis.org</a>。或者直接搜「你想做的事 + OpenAPI」。</p>
+</div>
+
+<h2 id="yaml">YAML 速成</h2>
+
+<p>
+  OpenAPI 文档可以用 JSON 或 YAML 写。本教程用 <strong>YAML</strong>：括号和引号少，人读写更舒服，还能写注释。
+  YAML 是 JSON 的近亲，能表达同样的东西：
+</p>
+
+<div class="vs">
+  <div class="new">
+    <div class="h">YAML</div>
+    <div class="code" data-lang="yaml"><pre>
+a-string: value
+a-number: 123
+a-boolean: true
+
+an-object:
+  a-property: value
+  another-property: value
+
+an-array:
+  - item-1-property-1: one
+    item-1-property-2: 1
+  - item-2-property-1: two
+    item-2-property-2: 2
+
+# 这是注释
+</pre></div>
+  </div>
+  <div class="old">
+    <div class="h">等价的 JSON</div>
+    <div class="code" data-lang="json"><pre>
+{
+  "a-string": "value",
+  "a-number": 123,
+  "a-boolean": true,
+  "an-object": {
+    "a-property": "value",
+    "another-property": "value"
+  },
+  "an-array": [
+    { "item-1-property-1": "one",
+      "item-1-property-2": 1 },
+    { "item-2-property-1": "two",
+      "item-2-property-2": 2 }
+  ]
+}
+</pre></div>
+  </div>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>JSON</th><th>YAML</th></tr>
+  <tr><td>属性名</td><td>必须加双引号</td><td>通常不加（纯数字的键要加，如 <code>"200"</code>）</td></tr>
+  <tr><td>字符串</td><td>必须加双引号</td><td>通常不加（只含数字或含特殊字符时要加，如 <code>"1.0"</code>）</td></tr>
+  <tr><td>对象</td><td><code>{ }</code> 和逗号</td><td>换行 + <strong>缩进</strong></td></tr>
+  <tr><td>数组</td><td><code>[ ]</code> 和逗号</td><td>换行 + 短横线 <code>-</code></td></tr>
+  <tr><td>注释</td><td>不支持</td><td><code>#</code> 开头</td></tr>
+</table>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 缩进就是结构</div>
+  <p>
+    YAML 最常见的坑是缩进错位，而且不容易看出来。如果编辑器报「不允许属性 X」，问题多半就出在 X 这一层或附近的缩进上。
+    另外：YAML 转 JSON 时注释会丢失。
+  </p>
+</div>
+
+<h2 id="map">电子表格 ↔ OpenAPI 文档</h2>
+
+<p>我们在表格里记的每样东西，OpenAPI 里都有固定的位置：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 400" role="img" aria-label="电子表格中的资源、操作、输入、输出、数据模型分别对应 OpenAPI 文档中的 paths、HTTP 方法、parameters、responses 和 schema">
+  <text class="ttl" x="20" y="22">API 电子表格</text>
+  <text class="ttl" x="400" y="22">OpenAPI 文档</text>
+
+  <rect class="bx" x="400" y="32" width="340" height="356" rx="10"/>
+  <text class="mono sm" x="414" y="52">openapi: 3.1.0</text>
+  <text class="mono sm" x="414" y="68">info:</text>
+  <text class="mono sm" x="414" y="84">  title: Online Shopping</text>
+  <text class="mono sm" x="414" y="100">  version: "1.0"</text>
+  <text class="mono sm" x="414" y="116">paths:</text>
+  <text class="mono sm on-b" x="414" y="134" font-weight="700">  /products:</text>
+  <text class="mono sm on-b" x="414" y="150">    summary: Catalog</text>
+  <text class="mono sm on-a" x="414" y="168" font-weight="700">    get:</text>
+  <text class="mono sm on-a" x="414" y="184">      summary: Search for products</text>
+  <text class="mono sm on-p" x="414" y="202" font-weight="700">      parameters:</text>
+  <text class="mono sm on-p" x="414" y="218">        - name: category</text>
+  <text class="mono sm on-p" x="414" y="234">          in: query</text>
+  <text class="mono sm" x="414" y="250">          schema:</text>
+  <text class="mono sm" x="414" y="266">            type: string</text>
+  <text class="mono sm on-g" x="414" y="284" font-weight="700">      responses:</text>
+  <text class="mono sm on-g" x="414" y="300">        "200":</text>
+  <text class="mono sm on-g" x="414" y="316">          description: Products matching…</text>
+  <text class="mono sm on-g" x="414" y="332">          content:</text>
+  <text class="mono sm on-g" x="414" y="348">            application/json:</text>
+  <text class="mono sm" x="414" y="364">              schema:</text>
+  <text class="mono sm" x="414" y="380">                type: array …</text>
+
+  <rect class="bx-b" x="20" y="116" width="270" height="42" rx="8"/>
+  <text class="ttl on-b" x="34" y="134">资源表</text><text class="sm" x="34" y="150">目录 → /products</text>
+  <path class="ln-b" d="M290 137 H398" marker-end="url(#ar-b)"/>
+
+  <rect class="bx-a" x="20" y="166" width="270" height="34" rx="8"/>
+  <text class="ttl on-a" x="34" y="188">操作：搜索商品 → GET</text>
+  <path class="ln-a" d="M290 183 C340 183 350 168 398 168" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-p" x="20" y="208" width="270" height="34" rx="8"/>
+  <text class="ttl on-p" x="34" y="230">输入：筛选条件（query）</text>
+  <path class="ln-p" d="M290 225 C340 225 350 204 398 204" marker-end="url(#ar-p)"/>
+
+  <rect class="bx-g" x="20" y="250" width="270" height="52" rx="8"/>
+  <text class="ttl on-g" x="34" y="270">输出：找到匹配的商品</text><text class="sm" x="34" y="290">200 · 商品摘要列表（body）</text>
+  <path class="ln-g" d="M290 276 C340 276 350 286 398 286" marker-end="url(#ar-g)"/>
+
+  <rect class="bx" x="20" y="310" width="270" height="52" rx="8"/>
+  <text class="ttl" x="34" y="330">数据模型</text><text class="sm" x="34" y="350">category: string · name: string …</text>
+  <path class="ln" d="M290 336 C340 336 350 250 398 250" marker-end="url(#ar)"/>
+  <path class="ln" d="M290 344 C340 344 350 364 398 364" marker-end="url(#ar)"/>
+  <text class="sm" x="155" y="382" text-anchor="middle">schema 用 JSON Schema 写，见第 7 章</text>
+</svg>
+<figcaption>图 6-2　表格里的每一列都能在 OpenAPI 文档里找到归宿</figcaption>
+</figure>
+
+<p>
+  描述和设计是<strong>并行</strong>的：第 4 章每做一个决定（定路径、选方法、选状态码……），就可以立刻写进 OpenAPI。
+  之前用表格只是为了让学习曲线平缓一些。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 不要在需求分析阶段用 OpenAPI</div>
+  <p>识别能力时（第 2 章）还不该想 REST 和 HTTP。要等「从 REST 视角观察」完成、开始处理 HTTP 元素时才打开 OpenAPI 编辑器。</p>
+</div>
+
+<h2 id="authoring">怎么写 OpenAPI 文档</h2>
+
+<h3>规范优先 vs 代码优先</h3>
+
+<ul>
+  <li><strong>规范优先（specification-first）</strong>：用编辑器直接写 OpenAPI 文档，它独立于实现而存在。</li>
+  <li><strong>代码优先（code-first）</strong>：只写控制器和数据模型的代码（不写业务逻辑），让框架生成 OpenAPI 文档。</li>
+</ul>
+
+<p>
+  这两个词经常和「<strong>设计优先（design-first）</strong>」混在一起。设计优先是指<em>先设计、后实现</em>，也就是这整套教程在讲的事 ——
+  它与上面两种写法都兼容。真正不推荐的是「拿到需求直接写实现、根本不设计」。
+</p>
+
+<div class="tw">
+<table>
+  <tr><th>维度</th><th>规范优先</th><th>代码优先</th></tr>
+  <tr>
+    <td>独立 vs 同步</td>
+    <td><span class="tag-g">优</span> 文档是独立的事实来源，可以用来检验实现是否符合预期；多出来的接口网关不会暴露</td>
+    <td><span class="tag-g">优</span> 文档永远和代码一致<br><span class="tag-r">劣</span> 实现悄悄变了，也没有独立的「应该是什么样」可供对照</td>
+  </tr>
+  <tr>
+    <td>编辑体验</td>
+    <td><span class="tag-g">优</span> OpenAPI 比开发框架好学，不用搭环境；有图形化编辑器</td>
+    <td><span class="tag-g">优</span> 开发者改起来顺手<br><span class="tag-r">劣</span> 不写代码的人很难参与；改个描述可能要重新编译部署</td>
+  </tr>
+  <tr>
+    <td>文档质量</td>
+    <td><span class="tag-g">优</span> 能用上 OpenAPI 的全部特性</td>
+    <td><span class="tag-r">劣</span> 框架未必支持所有特性，可能要加一堆专门的注解才能补齐</td>
+  </tr>
+  <tr>
+    <td>技术栈</td>
+    <td><span class="tag-g">优</span> 不用过早选定技术栈</td>
+    <td><span class="tag-r">劣</span> 必须先选技术栈；而且面对实现代码，更容易把内部细节带进设计</td>
+  </tr>
+</table>
+</div>
+
+<p>
+  一般推荐<strong>规范优先</strong>，本教程也采用它。但要看场合：如果文档和代码混在一起不成问题、对文档质量要求不高、实现不会悄悄演变，代码优先也是合理的。两者可以随时互相切换。
+</p>
+
+<h3>代码优先长什么样</h3>
+
+<p>
+  为了让你对「代码优先」有直观感受，下面用三个主流框架各写一个最小的例子。只写了接口的形状，没有业务逻辑 —— 框架就能生成 OpenAPI 文档。
+</p>
+
+<div class="tabs" data-title="代码优先：从代码生成 OpenAPI">
+<div class="code" data-lang="python" data-file="FastAPI（内建支持）">
+<pre>
+from fastapi import FastAPI
+
+app = FastAPI(title="Online Shopping", version="1.0")
+
+@app.get("/products", summary="Search for products")
+def search_products(keywords: str | None = None, category: str | None = None):
+    ...  # 还没有业务逻辑
+
+@app.get("/products/{productReference}", summary="Get product details")
+def get_product(productReference: int):
+    ...
+
+# 启动后访问：
+#   /openapi.json  → 生成的 OpenAPI 文档
+#   /docs          → 渲染好的交互式文档
+#
+# 或者直接导出：
+#   import json; print(json.dumps(app.openapi(), indent=2))
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono + @hono/zod-openapi">
+<pre>
+import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+
+const app = new OpenAPIHono();
+
+const searchProducts = createRoute({
+  method: "get",
+  path: "/products",
+  summary: "Search for products",
+  request: {
+    query: z.object({
+      keywords: z.string().optional(),
+      category: z.string().optional(),
+    }),
+  },
+  responses: {
+    200: { description: "Products matching filters found or no products matching filters" },
+    400: { description: "Wrong filters" },
+  },
+});
+
+app.openapi(searchProducts, (c) =&gt; c.json([]));   // 还没有业务逻辑
+
+// 生成的 OpenAPI 文档挂在 /openapi.json
+app.doc31("/openapi.json", {
+  openapi: "3.1.0",
+  info: { title: "Online Shopping", version: "1.0" },
+});
+
+export default app;
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot + springdoc-openapi">
+<pre>
+// 依赖：org.springdoc:springdoc-openapi-starter-webmvc-ui
+@OpenAPIDefinition(info = @Info(title = "Online Shopping", version = "1.0"))
+@RestController
+@RequestMapping("/products")
+public class ProductController {
+
+    @Operation(summary = "Search for products")
+    @ApiResponse(responseCode = "200",
+                 description = "Products matching filters found or no products matching filters")
+    @ApiResponse(responseCode = "400", description = "Wrong filters")
+    @GetMapping
+    public List&lt;Object&gt; searchProducts(@RequestParam(required = false) String keywords,
+                                       @RequestParam(required = false) String category) {
+        return List.of();   // 还没有业务逻辑
+    }
+
+    @Operation(summary = "Get product details")
+    @GetMapping("/{productReference}")
+    public Object getProduct(@PathVariable int productReference) {
+        return null;
+    }
+}
+
+// 启动后访问：
+//   /v3/api-docs        → 生成的 OpenAPI 文档
+//   /swagger-ui.html    → 渲染好的交互式文档
+</pre>
+</div>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 给老 API 补文档的捷径</div>
+  <p>如果要为一个已有的、没有文档的 API 补文档，在实现里加一个 OpenAPI 库是最快的办法。得到的文档不会 100% 完整，但所有操作及其输入和成功输出都能看到。</p>
+</div>
+
+<h3>编辑器、版本、格式</h3>
+
+<ul>
+  <li><strong>编辑器</strong>：学习阶段建议用左边写代码、右边实时渲染的编辑器，比如免安装的 <a href="https://editor-next.swagger.io/">Swagger Editor Next</a>（支持到 3.1）。日常大量使用时，可以考虑带图形界面的编辑器。</li>
+  <li><strong>版本</strong>：有 2.0、3.0、3.1 三个。别用 2.0。理想情况用 <strong>3.1</strong>；如果某些工具还不支持，用 3.0 也可以，两者差别很小（3.1 支持更新的 JSON Schema 和 webhook）。本教程用 3.1。</li>
+  <li><strong>格式</strong>：YAML 或 JSON，看喜好。本教程用 YAML。</li>
+</ul>
+
+<h2 id="paths">第一步：描述资源路径</h2>
+
+<h3>最小的 OpenAPI 文档</h3>
+
+<p>开始设计路径时，就可以创建文档了。一份合法的文档至少有三个顶层属性：</p>
+
+<div class="code" data-lang="yaml" data-file="openapi.yaml">
+<pre>
+openapi: 3.1.0          # 这份文档用的 OpenAPI 版本（3.0 的话写 3.0.3）
+info:                   # API 的元数据
+  title: Online Shopping     # API 的名称
+  version: "1.0"             # API 的版本；加引号确保它是字符串而不是数字
+paths: {}               # 必须有；先放一个空对象让文档合法
+</pre>
+</div>
+
+<h3>加一条路径</h3>
+
+<p>路径是 <code>paths</code> 下面的一个<strong>键</strong>，值是一个「路径项」对象：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /products:            # 「目录」资源的路径
+    summary: Catalog    # 资源的自然语言名称
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 认真写 summary 和 description</div>
+  <p>
+    这些属性大多是可选的，但<strong>强烈建议填上</strong>。它们把 OpenAPI 文档和能力画布里的自然语言连接起来，
+    让任何人（包括半年后的你）都能看懂每个 HTTP 元素的业务含义。
+  </p>
+</div>
+
+<h3>带路径参数的路径</h3>
+
+<p>路径里只要出现 <code>{xxx}</code>，就必须在这条路径的 <code>parameters</code> 列表里声明它，否则文档不合法：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /products/{productReference}:
+    summary: Product
+    parameters:                    # 路径级参数：对这条路径下的所有操作都生效
+      - name: productReference     # 必须与路径里花括号中的名字一致
+        in: path                   # 参数所在的位置
+        required: true             # 路径参数必须是 true
+        schema: {}                 # 数据类型，下一章再填；先放空对象保证合法
+</pre>
+</div>
+
+<p>有多个路径参数时，往列表里继续加元素即可。</p>
+
+<h2 id="ops">第二步：描述操作</h2>
+
+<p>选定 HTTP 方法后，把它的<strong>小写</strong>形式作为键加到路径下面，并用 <code>summary</code> 写上操作的名称：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /products:
+    summary: Catalog
+    post:
+      summary: Add a product to the catalog
+    get:
+      summary: Search for products
+  /products/{productReference}:
+    summary: Product
+    parameters:
+      - name: productReference
+        in: path
+        required: true
+        schema: {}
+    get:
+      summary: Get product details
+    put:                             # 也可以用 patch
+      summary: Modify a product
+    delete:
+      summary: Remove a product from the catalog
+</pre>
+</div>
+
+<p>文档的骨架已经出来了。此时渲染一下，就能得到一份可以拿去讨论的「API 能力总览」。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="OpenAPI 文档的层级结构：paths 包含路径，路径包含操作，操作包含参数、请求体和响应">
+  <rect class="bx" x="20" y="96" width="90" height="44" rx="8"/>
+  <text class="mono" x="65" y="123" text-anchor="middle">paths</text>
+
+  <rect class="bx-b" x="150" y="96" width="130" height="44" rx="8"/>
+  <text class="mono on-b" x="215" y="116" text-anchor="middle">/products</text>
+  <text class="sm" x="215" y="132" text-anchor="middle">路径项</text>
+  <path class="ln" d="M110 118 H148" marker-end="url(#ar)"/>
+
+  <rect class="bx-a" x="320" y="38" width="110" height="40" rx="8"/>
+  <text class="mono on-a" x="375" y="56" text-anchor="middle">get</text><text class="sm" x="375" y="71" text-anchor="middle">操作</text>
+  <rect class="bx-a" x="320" y="98" width="110" height="40" rx="8"/>
+  <text class="mono on-a" x="375" y="116" text-anchor="middle">post</text><text class="sm" x="375" y="131" text-anchor="middle">操作</text>
+  <rect class="bx-d" x="320" y="158" width="110" height="40" rx="8"/>
+  <text class="mono" x="375" y="176" text-anchor="middle">parameters</text><text class="sm" x="375" y="191" text-anchor="middle">路径级参数</text>
+  <path class="ln-b" d="M280 110 C300 110 300 58 318 58" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M280 118 H318" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M280 126 C300 126 300 178 318 178" marker-end="url(#ar-b)"/>
+
+  <rect class="bx-p" x="480" y="24" width="120" height="40" rx="8"/>
+  <text class="mono on-p" x="540" y="42" text-anchor="middle">parameters</text><text class="sm" x="540" y="57" text-anchor="middle">query / header / path</text>
+  <rect class="bx-p" x="480" y="98" width="120" height="40" rx="8"/>
+  <text class="mono on-p" x="540" y="116" text-anchor="middle">requestBody</text><text class="sm" x="540" y="131" text-anchor="middle">请求体</text>
+  <rect class="bx-g" x="480" y="172" width="120" height="40" rx="8"/>
+  <text class="mono on-g" x="540" y="190" text-anchor="middle">responses</text><text class="sm" x="540" y="205" text-anchor="middle">按状态码分</text>
+  <path class="ln-a" d="M430 108 C456 108 456 44 478 44" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M430 118 H478" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M430 128 C456 128 456 192 478 192" marker-end="url(#ar-a)"/>
+
+  <rect class="bx" x="640" y="98" width="104" height="40" rx="8"/>
+  <text class="mono" x="692" y="116" text-anchor="middle">content</text><text class="sm" x="692" y="131" text-anchor="middle">媒体类型 → schema</text>
+  <rect class="bx" x="640" y="158" width="104" height="30" rx="8"/><text class="mono" x="692" y="178" text-anchor="middle">"200"</text>
+  <rect class="bx" x="640" y="196" width="104" height="30" rx="8"/><text class="mono" x="692" y="216" text-anchor="middle">"404"</text>
+  <path class="ln-p" d="M600 118 H638" marker-end="url(#ar-p)"/>
+  <path class="ln-g" d="M600 186 C620 186 620 173 638 173" marker-end="url(#ar-g)"/>
+  <path class="ln-g" d="M600 198 C620 198 620 211 638 211" marker-end="url(#ar-g)"/>
+</svg>
+<figcaption>图 6-3　一份 OpenAPI 文档的层级：路径 → 操作 → 输入（参数、请求体）和输出（响应）</figcaption>
+</figure>
+
+<h2 id="inputs">第三步：描述输入</h2>
+
+<p>
+  HTTP 请求里放数据的位置有四个（第 4 章）。OpenAPI 把它们分成两组：
+  请求头、路径参数、查询参数统称<strong>非 body 参数</strong>，放在 <code>parameters</code> 列表里；请求体单独放在 <code>requestBody</code> 里。
+</p>
+
+<h3>查询参数</h3>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /products:
+    get:
+      summary: Search for products
+      parameters:                # 操作级参数列表
+        - name: keywords
+          in: query              # 位置：查询参数
+          schema: {}             # 没写 required → 默认可选
+        - name: category
+          in: query
+          required: false        # 也可以显式写出「可选」
+          schema: {}
+</pre>
+</div>
+
+<p>
+  <code>in</code> 的取值是 <code>query</code>、<code>path</code> 或 <code>header</code>。
+  参数可以定义在<strong>路径级</strong>（对该路径下所有操作生效）或<strong>操作级</strong>。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 可以先粗后细</div>
+  <p>还没想清楚具体有哪些筛选项时，可以先写一个叫 <code>filters</code> 的参数占位，等做数据建模时再换成真正的 <code>keywords</code>、<code>category</code>……路径参数的名字也一样，可以后改。</p>
+</div>
+
+<h3>请求体</h3>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /products:
+    post:
+      summary: Add a product to the catalog
+      requestBody:
+        description: Product info        # 请求体的自然语言描述
+        content:                         # 请求体的内容
+          application/json:              # 媒体类型：这里是 JSON
+            schema: {}                   # 数据模型，下一章再填
+</pre>
+</div>
+
+<p>
+  <code>content</code> 下面的键是<strong>媒体类型</strong>（media type），说明请求体的格式。我们暂时统一用 <code>application/json</code>，其他选择第 9 章再说。
+  即使还不知道具体模型，也建议把 <code>content</code> 填上最少的内容 —— 这样文档工具才会把请求体显示出来。
+</p>
+
+<h2 id="status">第四步：描述响应状态</h2>
+
+<p>操作的输出写在 <code>responses</code> 里，以 <strong>HTTP 状态码为键</strong>（要加引号，否则 YAML 会把它当数字）：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /products:
+    post:
+      summary: Add a product to the catalog
+      responses:
+        "201":
+          description: Product added to the catalog      # 面向业务的输出描述
+        "400":
+          description: Wrong product information
+        "500":
+          description: Unexpected server error
+</pre>
+</div>
+
+<h3>两种输出共用一个状态码</h3>
+
+<p>
+  「搜索商品」有两种成功输出 ——「找到了」和「没找到」—— 都用 <code>200</code>。但 YAML 里一个键不能出现两次，所以把它们<strong>合并</strong>成一个响应，把描述连起来：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+    get:
+      summary: Search for products
+      responses:
+        "200":
+          description: Products matching filters found or no products matching filters
+        "400":
+          description: Wrong filters
+        "500":
+          description: Unexpected server error
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 能合并的前提</div>
+  <p>
+    共用同一个状态码的几种输出，通常数据类型也相同（这里都是商品摘要的列表，只是一个为空）。
+    如果它们的数据类型不同，说明操作或数据的识别可能有问题：要么找一个共同的父类型，要么把操作拆开。
+  </p>
+</div>
+
+<h2 id="content">第五步：描述响应内容</h2>
+
+<h3>响应体</h3>
+
+<p>写法和请求体类似，只是自然语言描述的位置略有不同：响应本身有 <code>description</code>（输出的含义），数据的描述放在 <code>schema.description</code> 里。</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+      responses:
+        "201":
+          description: Product added to the catalog
+          content:
+            application/json:
+              schema:
+                description: Product info.      # 数据的描述
+        "400":
+          description: Wrong product information
+          content:
+            application/json:
+              schema:
+                description: Error info.
+</pre>
+</div>
+
+<h3>没有响应体的响应</h3>
+
+<p>不写 <code>content</code> 就表示没有响应体：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+  /products/{productReference}:
+    delete:
+      summary: Remove a product from the catalog
+      responses:
+        "204":
+          description: Product removed            # 204 No Content：没有 content
+        "404":
+          description: No product found
+          content:
+            application/json:
+              schema:
+                description: Error info.
+</pre>
+</div>
+
+<h3>响应头</h3>
+
+<p>响应头写在响应对象的 <code>headers</code> 映射里，头的名字是键：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+        "201":
+          description: Product added to the catalog
+          headers:
+            Location:                     # 头的名字
+              description: Product URL
+              required: true              # 表示这个头总是会返回
+              schema: {}
+          content:
+            application/json:
+              schema:
+                description: Product info.
+</pre>
+</div>
+
+<p>头对象的结构和参数对象基本一样，只是没有 <code>name</code> 和 <code>in</code>（名字已经是键了，位置必然是 header）。</p>
+
+<h2 id="full">完整的文档</h2>
+
+<p>把上面的片段拼起来，五个操作的 HTTP 描述就完成了。所有 <code>schema</code> 现在还是空的或只有描述 —— 它们标出了下一章要填数据模型的位置。</p>
+
+<div class="code" data-lang="yaml" data-file="online-shopping.openapi.yaml">
+<pre>
+openapi: 3.1.0
+info:
+  title: Online Shopping
+  version: "1.0"
+paths:
+  /products:
+    summary: Catalog
+    post:
+      summary: Add a product to the catalog
+      requestBody:
+        description: Product info
+        content:
+          application/json:
+            schema: {}
+      responses:
+        "201":
+          description: Product added to the catalog
+          headers:
+            Location:
+              description: Product URL
+              required: true
+              schema: {}
+          content:
+            application/json:
+              schema:
+                description: Product info.
+        "400":
+          description: Wrong product information
+          content:
+            application/json:
+              schema:
+                description: Error info.
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                description: Error info.
+    get:
+      summary: Search for products
+      parameters:
+        - name: keywords
+          in: query
+          schema: {}
+        - name: category
+          in: query
+          schema: {}
+      responses:
+        "200":
+          description: Products matching filters found or no products matching filters
+          content:
+            application/json:
+              schema:
+                description: Products info.
+        "400":
+          description: Wrong filters
+          content:
+            application/json:
+              schema:
+                description: Error info.
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                description: Error info.
+  /products/{productReference}:
+    summary: Product
+    parameters:
+      - name: productReference
+        in: path
+        required: true
+        schema: {}
+    get:
+      summary: Get product details
+      responses:
+        "200":
+          description: Product found
+          content:
+            application/json:
+              schema:
+                description: Product info.
+        "404":
+          description: No product found
+          content:
+            application/json:
+              schema:
+                description: Error info.
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                description: Error info.
+    put:
+      summary: Modify a product
+      requestBody:
+        description: Modified product info
+        content:
+          application/json:
+            schema: {}
+      responses:
+        "200":
+          description: Product modified
+          content:
+            application/json:
+              schema:
+                description: Product info.
+        "400":
+          description: Wrong product information
+          content:
+            application/json:
+              schema:
+                description: Error info.
+        "404":
+          description: No product found
+          content:
+            application/json:
+              schema:
+                description: Error info.
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                description: Error info.
+    delete:
+      summary: Remove a product from the catalog
+      responses:
+        "204":
+          description: Product removed
+        "404":
+          description: No product found
+          content:
+            application/json:
+              schema:
+                description: Error info.
+        "500":
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                description: Error info.
+</pre>
+</div>
+
+<p>
+  重复的地方很多（<code>500</code> 写了五遍）。别急着优化 —— 先把设计做对，第 17 章专门讲如何用 <code>components</code> 和 <code>$ref</code> 消除重复。
+  本仓库 <code>6. Describing HTTP operations with OpenAPI/</code> 目录下有书中每个清单对应的文件，可以贴进编辑器逐个对照。
+</p>
+
+<h3>OpenAPI 文档就是数据</h3>
+
+<p>
+  因为它是结构化的 YAML/JSON，用几行代码就能读它。下面的脚本读入上面的文件，打印出一张「操作总览」——
+  正是我们之前在电子表格里手工维护的那张表。文档工具、Mock、代码生成器本质上都是在做同样的事。
+</p>
+
+<div class="tabs" data-title="读取 OpenAPI 文档并列出所有操作">
+<div class="code" data-lang="python">
+<pre>
+# pip install pyyaml
+import yaml
+
+METHODS = ("get", "post", "put", "patch", "delete")
+
+with open("online-shopping.openapi.yaml") as f:
+    doc = yaml.safe_load(f)
+
+print(f"{doc['info']['title']} v{doc['info']['version']}\n")
+
+for path, item in doc["paths"].items():
+    print(f"{path}  ({item.get('summary', '')})")
+    for method in METHODS:
+        op = item.get(method)
+        if not op:
+            continue
+        statuses = ", ".join(op.get("responses", {}).keys())
+        print(f"  {method.upper():6} {op.get('summary', ''):36} → {statuses}")
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// npm install yaml
+import { readFileSync } from "node:fs";
+import { parse } from "yaml";
+
+const METHODS = ["get", "post", "put", "patch", "delete"] as const;
+
+type Operation = { summary?: string; responses?: Record&lt;string, unknown&gt; };
+type PathItem = { summary?: string } &amp; Partial&lt;Record&lt;(typeof METHODS)[number], Operation&gt;&gt;;
+type OpenApiDoc = {
+  info: { title: string; version: string };
+  paths: Record&lt;string, PathItem&gt;;
+};
+
+const doc: OpenApiDoc = parse(readFileSync("online-shopping.openapi.yaml", "utf8"));
+
+console.log(`${doc.info.title} v${doc.info.version}\n`);
+
+for (const [path, item] of Object.entries(doc.paths)) {
+  console.log(`${path}  (${item.summary ?? ""})`);
+  for (const method of METHODS) {
+    const op = item[method];
+    if (!op) continue;
+    const statuses = Object.keys(op.responses ?? {}).join(", ");
+    console.log(`  ${method.toUpperCase().padEnd(6)} ${(op.summary ?? "").padEnd(36)} → ${statuses}`);
+  }
+}
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 依赖：io.swagger.parser.v3:swagger-parser
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.PathItem;
+import io.swagger.v3.parser.OpenAPIV3Parser;
+
+public class ListOperations {
+    public static void main(String[] args) {
+        OpenAPI doc = new OpenAPIV3Parser().read("online-shopping.openapi.yaml");
+
+        System.out.printf("%s v%s%n%n", doc.getInfo().getTitle(), doc.getInfo().getVersion());
+
+        doc.getPaths().forEach((path, item) -&gt; {
+            System.out.printf("%s  (%s)%n", path, item.getSummary());
+            // readOperationsMap() 返回这条路径上定义的所有「HTTP 方法 → 操作」
+            item.readOperationsMap().forEach((PathItem.HttpMethod method, var op) -&gt; {
+                String statuses = String.join(", ", op.getResponses().keySet());
+                System.out.printf("  %-6s %-36s → %s%n", method, op.getSummary(), statuses);
+            });
+        });
+    }
+}
+</pre>
+</div>
+</div>
+
+<div class="code" data-lang="text" data-file="输出">
+<pre>
+Online Shopping v1.0
+
+/products  (Catalog)
+  POST   Add a product to the catalog         → 201, 400, 500
+  GET    Search for products                  → 200, 400, 500
+/products/{productReference}  (Product)
+  GET    Get product details                  → 200, 404, 500
+  PUT    Modify a product                     → 200, 400, 404, 500
+  DELETE Remove a product from the catalog    → 204, 404, 500
+</pre>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>API 规范是描述 API 的数据格式，可用于整个生命周期；OpenAPI（原 Swagger 规范）是 REST API 的行业标准。</li>
+  <li>设计时使用 OpenAPI 能简化描述、辅助思考、方便讨论。</li>
+  <li>通常推荐规范优先；视情况也可以代码优先。</li>
+  <li>OpenAPI 文档可以和 HTTP 操作设计、数据建模并行编写，从设计路径时就开始。</li>
+  <li>资源路径是 <code>paths</code> 下的键；路径参数必须在路径级的 <code>parameters</code> 里定义，且 <code>required: true</code>。</li>
+  <li>HTTP 方法以小写形式作为路径下的键。</li>
+  <li>请求头和查询参数放在操作的 <code>parameters</code> 里，用 <code>in</code> 指明位置；请求体放在 <code>requestBody</code> 里。</li>
+  <li>填上 <code>content</code> 才能让请求体在文档工具里显示；<code>schema</code> 标出了之后要描述数据的位置。</li>
+  <li>状态码是 <code>responses</code> 下的键；共用状态码的输出只有在数据类型相同时才合并。</li>
+  <li>响应头放在 <code>headers</code>，响应体放在 <code>content</code>。</li>
+  <li>用 <code>summary</code> 和 <code>description</code> 保留自然语言描述，把文档和能力画布连起来。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      修正下面的路径定义：
+      <div class="code" data-lang="yaml"><pre>
+paths:
+  /books/{bookReference}:
+    summary: A book
+    parameters:
+      - name: bookId
+        in: path
+        schema: {}
+</pre></div>
+      <details class="ans"><summary>参考答案</summary>
+        两处错误：参数名 <code>bookId</code> 与路径里的 <code>bookReference</code> 不一致；路径参数缺少 <code>required: true</code>。
+        把 <code>name</code> 改为 <code>bookReference</code>（或把路径改成 <code>{bookId}</code>），并加上 <code>required: true</code>。
+        仓库里的 <code>Appendix - Solutions to Exercises/Listing A.5</code> 是标准答案。
+      </details>
+    </li>
+    <li>
+      在线教学系统：描述「某位讲师开设的某门课程」这个资源的路径。
+      <details class="ans"><summary>参考答案</summary>
+        <code>/instructors/{instructorId}/courses/{courseId}</code>，并在路径级 <code>parameters</code> 里声明<strong>两个</strong>路径参数，都是 <code>in: path</code>、<code>required: true</code>。
+      </details>
+    </li>
+    <li>
+      徒步应用：描述「获取某条路线的分段列表，并允许按难度筛选」这个操作的输入。
+      <details class="ans"><summary>参考答案</summary>
+        路径 <code>/trails/{trailId}/segments</code>：<code>trailId</code> 是路径级的路径参数（必填）；
+        <code>get</code> 操作的 <code>parameters</code> 里加一个 <code>name: difficulty</code>、<code>in: query</code> 的可选参数。
+      </details>
+    </li>
+    <li>
+      下面的操作描述有两处问题，找出来：
+      <div class="code" data-lang="yaml"><pre>
+paths:
+  /hotels/{hotelId}:
+    summary: An hotel
+    get:
+      summary: Get hotel details
+      responses:
+        "200":
+          description: Hotel details successfully retrieved
+          content:
+            schema: {}
+</pre></div>
+      <details class="ans"><summary>参考答案</summary>
+        ① 路径参数 <code>hotelId</code> 没有在 <code>parameters</code> 里声明。
+        ② <code>content</code> 下面缺了媒体类型这一层，应为 <code>content: → application/json: → schema: {}</code>。
+        另外从设计上看，带路径参数的操作还应该有 <code>404</code> 和 <code>500</code> 响应。
+      </details>
+    </li>
+    <li>把本章的完整文档贴进 Swagger Editor Next，看看渲染效果；再跑一下「列出所有操作」的脚本。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

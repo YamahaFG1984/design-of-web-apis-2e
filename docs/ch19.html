@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 19 章 · 丰富 API 设计产物 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="19">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 19 章</span>
+<h1>丰富 API 设计产物</h1>
+<p class="lede">
+  一路走来，我们积累了一批产物：填好的能力画布、OpenAPI 文档、设计指南（连同组件库和 lint 规则）。
+  它们合在一起，就是这个 API 的<strong>设计参考套件</strong> —— 既是设计过程的支撑，也是交付给后续环节的成果。
+  最后一章讨论如何把它打磨得更有用：加概览、让模型更精确、配上示例、照顾实现者，以及要不要做 Mock 和测试。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>知道设计参考套件里有什么，以及它在 API 生命周期各阶段怎么被使用</li>
+    <li>用 <code>info</code>、<code>externalDocs</code> 和 <code>tags</code> 给 OpenAPI 文档加上概览</li>
+    <li>用 JSON Schema 的约束关键字让数据模型更精确</li>
+    <li>用 JSON Schema 和 OpenAPI 的示例机制说明数据和操作</li>
+    <li>为实现者补充备注，并让文档更适合代码生成</li>
+    <li>判断什么时候值得做 Mock、原型和功能测试</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="kit">API 设计参考套件</h2>
+
+<p>
+  <strong>设计参考套件（API design reference kit）</strong>是一组能够<em>完整描述</em>一个 API（接口）的产物和信息。
+  虽然「丰富设计产物」在流程图里排在最后一步，但它其实与前面几步并行：套件从设计的第一天就开始积累，随时可以补充。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 330" role="img" aria-label="设计参考套件的组成部分，以及它在设计、开发、测试、部署、提供与消费各阶段的用途">
+  <rect class="bx-a" x="20" y="20" width="430" height="290" rx="14"/>
+  <text class="ttl on-a" x="235" y="46" text-anchor="middle">API 设计参考套件</text>
+
+  <rect class="bx" x="36" y="60" width="126" height="58" rx="8"/>
+  <text class="ttl" x="99" y="84" text-anchor="middle">需求描述</text>
+  <text class="sm" x="99" y="104" text-anchor="middle">wiki、工单……</text>
+  <rect class="bx" x="172" y="60" width="126" height="58" rx="8"/>
+  <text class="ttl" x="235" y="84" text-anchor="middle">能力画布</text>
+  <text class="sm" x="235" y="104" text-anchor="middle">用户、用例、操作</text>
+  <rect class="bx" x="308" y="60" width="126" height="58" rx="8"/>
+  <text class="ttl" x="371" y="84" text-anchor="middle">OpenAPI 文档</text>
+  <text class="sm" x="371" y="104" text-anchor="middle">操作、数据、安全</text>
+
+  <rect class="bx" x="36" y="130" width="398" height="58" rx="8"/>
+  <text class="ttl" x="235" y="154" text-anchor="middle">API 设计指南</text>
+  <text class="sm" x="235" y="174" text-anchor="middle">原则与规则 · 配方 · OpenAPI 组件库 · lint 规则集</text>
+
+  <rect class="bx-d" x="36" y="200" width="192" height="58" rx="8"/>
+  <text class="ttl" x="132" y="224" text-anchor="middle">Mock 或原型</text>
+  <text class="sm" x="132" y="244" text-anchor="middle">可选</text>
+  <rect class="bx-d" x="242" y="200" width="192" height="58" rx="8"/>
+  <text class="ttl" x="338" y="224" text-anchor="middle">功能测试</text>
+  <text class="sm" x="338" y="244" text-anchor="middle">可选</text>
+
+  <text class="sm" x="235" y="284" text-anchor="middle">还可以包含：实现备注、Postman Collection、Arazzo 流程描述……</text>
+
+  <g>
+    <rect class="bx-b" x="510" y="20" width="230" height="46" rx="8"/><text class="ttl on-b" x="524" y="40">设计</text><text class="sm" x="524" y="57">理解、讨论、评估设计是否满足需求</text>
+    <rect class="bx-b" x="510" y="76" width="230" height="46" rx="8"/><text class="ttl on-b" x="524" y="96">开发</text><text class="sm" x="524" y="113">准确地编码；生成代码和校验逻辑</text>
+    <rect class="bx-b" x="510" y="132" width="230" height="46" rx="8"/><text class="ttl on-b" x="524" y="152">测试</text><text class="sm" x="524" y="169">据此编写（部分自动生成）测试</text>
+    <rect class="bx-b" x="510" y="188" width="230" height="46" rx="8"/><text class="ttl on-b" x="524" y="208">部署</text><text class="sm" x="524" y="225">网关用作用域和 schema 做配置</text>
+    <rect class="bx-b" x="510" y="244" width="230" height="66" rx="8"/><text class="ttl on-b" x="524" y="264">提供 / 消费</text><text class="sm" x="524" y="281">公开 API：技术写作者据此写门户文档</text><text class="sm" x="524" y="298">私有 API：它往往就是唯一的文档</text>
+  </g>
+  <path class="ln-a" d="M450 100 C480 100 480 43 508 43" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M450 130 C480 130 480 99 508 99" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M450 160 H508" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M450 190 C480 190 480 211 508 211" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M450 220 C480 220 480 277 508 277" marker-end="url(#ar-a)"/>
+</svg>
+<figcaption>图 19-1　套件的内容和它在生命周期各阶段的用途。产物可以是文档、机器可读的文件、可运行的程序或代码</figcaption>
+</figure>
+
+<h3>各阶段怎么用它</h3>
+
+<ul>
+  <li><strong>设计</strong>：需求、画布和 OpenAPI 文档让大家能讨论和评估设计；指南帮助我们做出好用、可互操作、可演进、高效的设计；Mock 或原型让人能「摸到」设计，尽早发现缺什么。</li>
+  <li><strong>开发</strong>：实现者据此准确地写代码和安全控制；可以从 OpenAPI 文档生成代码或用 JSON Schema 校验输入 —— 但记住实现应该返回<strong>完整的</strong>错误，而不只是基本的校验失败（第 9 章）。</li>
+  <li><strong>测试</strong>：开发、QA 和安全专家据此编写测试；OpenAPI 和 JSON Schema 的机器可读性可以自动生成一部分，但覆盖不了所有情况。</li>
+  <li>
+    <strong>部署</strong>：API 网关可以直接使用文档里的安全作用域和 schema。
+    但要留意：如果让网关在转发前就按 schema 把请求挡回去，实现精心准备的「一次报全、信息友好」的错误就没机会返回了。
+  </li>
+  <li>
+    <strong>提供与消费</strong>：对公开或合作伙伴 API，它是技术写作者制作开发者门户的输入之一；
+    对私有 API，消费方的开发者多半只能直接用这份「毛坯」套件 —— 它远不如公开门户精致，但<strong>要么是它，要么什么都没有</strong>。
+  </li>
+</ul>
+
+<div class="box key">
+  <div class="t">&#9733; 量力而行</div>
+  <p>
+    我们已有的画布、OpenAPI 文档和指南已经构成了一套扎实的套件，可以到此为止。下面的每一项增强都要问一句：<strong>在我们的情况下值得吗？</strong>
+    套件不是公开 API 的最终文档（那是另一份工作），不要把它做过头。
+  </p>
+</div>
+
+<h2 id="overview">用 OpenAPI 提供概览</h2>
+
+<h3>描述 API，并链接到其他产物</h3>
+
+<div class="code" data-lang="yaml">
+<pre>
+openapi: 3.1.0
+info:
+  title: Banking API
+  version: "1.0"
+  summary: Manage accounts, transactions, and money transfers     # 名字说不清时加一句话
+  description: |
+    更长的说明可以写在这里（支持 Markdown）。
+
+    # Links
+    - [Needs](https://needs.url)
+    - [API capabilities canvas](https://canvas.url)
+    - [API design guidelines](https://guidelines.url)
+externalDocs:                         # 如果 OpenAPI 文档不是所有产物的入口，就指向那个入口
+  url: https://docs.url
+  description: All documentation
+</pre>
+</div>
+
+<p>
+  这样 OpenAPI 文档就成了一个<strong>中心枢纽</strong>。大多数 OpenAPI 对象都支持 <code>description</code> 和 <code>externalDocs</code> —— 组件库里的每个组件都可以链接到指南的对应章节。
+</p>
+
+<h3>用标签按概念和用例组织操作</h3>
+
+<p>
+  工具默认把操作显示成一长串扁平的列表，看不出 API 涉及哪些概念、能完成什么事。<strong>标签（tags）</strong>可以把操作分组；一个操作可以有多个标签：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+tags:                                 # 根级的 tags 列表决定各组的显示顺序
+  - name: Concept - Owner
+  - name: Concept - Transfer
+  - name: Use Case - Transfer Money
+    externalDocs:                     # 可以直接链接到画布里这个用例所在的行
+      description: API capabilities canvas
+      url: https://canvas.url?sheet=1&amp;line=12
+    description: |                    # 或者用 Markdown 描述用例的步骤
+      1. List sources
+      1. List source destinations
+      1. Create transfer
+
+paths:
+  /transfers:
+    get:
+      summary: Search transfers
+      tags:
+        - Concept - Transfer
+    post:
+      summary: Create transfer
+      tags:
+        - Concept - Transfer
+        - Use Case - Transfer Money   # 同一个操作出现在两个分组里
+  /sources:
+    get:
+      summary: List sources
+      tags:
+        - Concept - Transfer          # 「转账」这个概念下不止 /transfers 一个资源
+        - Use Case - Transfer Money
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="文档工具根据标签把操作分组显示在导航里">
+  <rect class="bx" x="20" y="20" width="720" height="200" rx="12"/>
+  <rect class="bx" x="20" y="20" width="720" height="30" rx="12"/>
+  <text class="sm" x="36" y="40">https://ref.doc　　BANKING API — Version 1.0</text>
+
+  <rect class="bx-d" x="36" y="62" width="200" height="146" rx="8"/>
+  <text class="sm" x="48" y="82" font-weight="700">导航</text>
+  <text class="sm" x="48" y="104">Concept - Owner</text>
+  <text class="sm on-a" x="48" y="124" font-weight="700">Concept - Transfer</text>
+  <text class="sm" x="48" y="144">Use Case - Transfer Money</text>
+  <text class="sm" x="48" y="186" style="fill:var(--fg-faint)">标签被加进了导航</text>
+
+  <rect class="bx-a" x="254" y="62" width="230" height="146" rx="8"/>
+  <text class="ttl on-a" x="268" y="84">Concept - Transfer</text>
+  <text class="mono sm" x="268" y="108">GET  Search transfers</text>
+  <text class="mono sm" x="268" y="126">POST Create transfer</text>
+  <text class="mono sm" x="268" y="144">GET  List sources</text>
+  <text class="mono sm" x="268" y="162">GET  List source destinations</text>
+  <text class="sm" x="268" y="194" style="fill:var(--fg-faint)">一眼看到这个概念下的全部操作</text>
+
+  <rect class="bx-b" x="500" y="62" width="224" height="146" rx="8"/>
+  <text class="ttl on-b" x="514" y="84">Use Case - Transfer Money</text>
+  <text class="mono sm" x="514" y="108">POST Create transfer</text>
+  <text class="mono sm" x="514" y="126">GET  List sources</text>
+  <text class="mono sm" x="514" y="144">GET  List source destinations</text>
+  <text class="sm" x="514" y="176" style="fill:var(--fg-faint)">组内顺序 = 文档里定义的顺序，</text>
+  <text class="sm" x="514" y="194" style="fill:var(--fg-faint)">没法按用例步骤重排</text>
+</svg>
+<figcaption>图 19-2　按概念和按用例各建一组标签，就得到了 API 的两种概览</figcaption>
+</figure>
+
+<div class="box note">
+  <div class="t">&#9432; 别在 OpenAPI 里硬写用例</div>
+  <p>
+    在标签的描述里详细写用例的步骤是可以的，但工作量不小 —— OpenAPI 本来不是干这个的。
+    更省事的做法是只打标签，然后从带标签的 OpenAPI 文档生成一份 <strong>Postman Collection</strong>：它支持完整的请求/响应示例，API 上线后还能直接拿来调用。
+    或者使用 OpenAPI 组织推出的 <strong>Arazzo</strong> 格式来正式描述操作流（如果你的工具支持）。
+  </p>
+</div>
+
+<h2 id="precision">让数据模型更精确</h2>
+
+<p>
+  第 7 章只给属性定了类型，其余的约束（「金额大于 0」「币种是 USD 或 EUR」）都写在文字描述里 —— 只有人（和 AI）读得懂。
+  JSON Schema 有一批关键字可以把这些约束变成<strong>机器可读</strong>的，文档、代码生成、测试、Mock 工具都能用上。
+</p>
+
+<div class="tw">
+<table>
+  <tr><th>要表达的约束</th><th>关键字</th><th>例子</th></tr>
+  <tr><td>数值范围</td><td><code>minimum</code>（≥）、<code>exclusiveMinimum</code>（&gt;）<br><code>maximum</code>（≤）、<code>exclusiveMaximum</code>（&lt;）</td><td>年龄 12 ≤ age &lt; 100：<code>minimum: 12</code>、<code>exclusiveMaximum: 100</code><br>金额 &gt; 0：<code>exclusiveMinimum: 0</code>（范围可以只有一端）</td></tr>
+  <tr><td>数组长度</td><td><code>minItems</code>、<code>maxItems</code></td><td>每页最多 100 条：<code>maxItems: 100</code><br>1 到 3 个地址：<code>minItems: 1</code>、<code>maxItems: 3</code></td></tr>
+  <tr><td>字符串长度</td><td><code>minLength</code>、<code>maxLength</code></td><td>姓氏 1–200 个字符</td></tr>
+  <tr><td>字符串格式</td><td><code>pattern</code>（正则表达式）</td><td>账户 ID 形如 <code>acc-12345</code>：<code>pattern: "^acc-[0-9]+$"</code></td></tr>
+  <tr><td>取值集合</td><td><code>enum</code></td><td><code>enum: [USD, EUR]</code></td></tr>
+  <tr><td>默认值</td><td><code>default</code></td><td>分页大小不传时为 100：<code>default: 100</code></td></tr>
+</table>
+</div>
+
+<div class="code" data-lang="yaml">
+<pre>
+components:
+  schemas:
+    AccountId:
+      type: string
+      pattern: "^acc-[0-9]+$"         # acc- 后面至少一位数字
+    Amount:
+      required: [value]
+      properties:
+        value:
+          type: number
+          exclusiveMinimum: 0         # 必须大于 0
+        currency:
+          type: string
+          enum: [USD, EUR]            # 只能是这两个值
+          default: USD
+    Owner:
+      properties:
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 200
+        age:
+          type: integer
+          minimum: 12
+          exclusiveMaximum: 100
+        addresses:
+          type: array
+          minItems: 1
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/Address"
+  parameters:
+    PaginationLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 100
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 三点提醒</div>
+  <ul>
+    <li><strong>给 ID 加类型前缀</strong>（<code>acc-</code>、<code>trf-</code>）能让人一眼看出它标识的是什么。但只对<em>新造的</em>自定义 ID 这么做 —— 改动已有的、被多个系统共用的 ID，或者偏离既有标准，会破坏互操作性。</li>
+    <li>如果范围或取值取决于<strong>业务逻辑或配置</strong>（动态的），仍然只能用文字描述；考虑提供一个操作来返回这些动态的值（第 10、15 章）。经常变化的取值集合也不要写成 <code>enum</code>。</li>
+    <li>第一遍建模时专注于识别数据，用文字描述约束即可。这些 JSON Schema 细节可以留到第二遍。</li>
+  </ul>
+</div>
+
+<h3>从 schema 约束到代码里的校验</h3>
+
+<p>
+  精确的 schema 可以直接转化成实现里的校验代码 —— 手写或由代码生成器生成。三种语言的对应写法：
+</p>
+
+<div class="tabs" data-title="JSON Schema 约束对应的校验代码">
+<div class="code" data-lang="python" data-file="Pydantic">
+<pre>
+from typing import Literal
+from pydantic import BaseModel, Field
+
+class Amount(BaseModel):
+    value: float = Field(gt=0)                              # exclusiveMinimum: 0
+    currency: Literal["USD", "EUR"] = "USD"                 # enum + default
+
+class Owner(BaseModel):
+    lastName: str = Field(min_length=1, max_length=200)     # minLength / maxLength
+    age: int = Field(ge=12, lt=100)                         # minimum / exclusiveMaximum
+    addresses: list[str] = Field(min_length=1, max_length=3)   # minItems / maxItems
+
+class Transfer(BaseModel):
+    source: str = Field(pattern=r"^acc-[0-9]+$")            # pattern
+    destination: str = Field(pattern=r"^acc-[0-9]+$")
+    amount: Amount
+
+# FastAPI 会据此自动校验请求，并把这些约束写进它生成的 OpenAPI 文档
+# 查询参数同理：limit: int = Query(100, ge=1, le=100)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Zod">
+<pre>
+import { z } from "zod";
+
+const Amount = z.object({
+  value: z.number().gt(0),                                  // exclusiveMinimum: 0
+  currency: z.enum(["USD", "EUR"]).default("USD"),          // enum + default
+});
+
+const Owner = z.object({
+  lastName: z.string().min(1).max(200),                     // minLength / maxLength
+  age: z.number().int().gte(12).lt(100),                    // minimum / exclusiveMaximum
+  addresses: z.array(z.string()).min(1).max(3),             // minItems / maxItems
+});
+
+const AccountId = z.string().regex(/^acc-[0-9]+$/);         // pattern
+
+const Transfer = z.object({
+  source: AccountId,
+  destination: AccountId,
+  amount: Amount,
+});
+
+// 查询参数：limit 不传时为 100
+const Pagination = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(100),
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Bean Validation">
+<pre>
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
+
+enum Currency { USD, EUR }                                   // enum
+
+record Amount(
+    @NotNull @Positive BigDecimal value,                     // exclusiveMinimum: 0
+    Currency currency                                        // default 在构造时处理（见下）
+) {
+    Amount {
+        if (currency == null) currency = Currency.USD;       // default: USD
+    }
+}
+
+record Owner(
+    @NotNull @Size(min = 1, max = 200) String lastName,      // minLength / maxLength
+    @Min(12) @Max(99) int age,                               // minimum / exclusiveMaximum（整数）
+    @NotNull @Size(min = 1, max = 3) List&lt;String&gt; addresses  // minItems / maxItems
+) {}
+
+record Transfer(
+    @NotNull @Pattern(regexp = "^acc-[0-9]+$") String source,        // pattern
+    @NotNull @Pattern(regexp = "^acc-[0-9]+$") String destination,
+    @NotNull @Valid Amount amount
+) {}
+
+// 查询参数：
+// @RequestParam(defaultValue = "100") @Min(1) @Max(100) int limit
+</pre>
+</div>
+</div>
+
+<h2 id="examples">用示例说明数据和操作</h2>
+
+<p>
+  文档工具能根据 schema 自动生成示例数据，但结果往往是 <code>"string"</code> 和 <code>"lorem ipsum"</code> 这类毫无帮助的占位符。
+  必要的时候，可以自己提供示例。
+</p>
+
+<h3>属性级：JSON Schema 的 examples</h3>
+
+<div class="code" data-lang="yaml">
+<pre>
+    Transaction:
+      properties:
+        label:
+          type: string
+          maxLength: 200
+          examples:                   # JSON Schema 标准的写法：一个列表
+            - Monthly saving
+            - Seven Eleven, Tokyo
+</pre>
+</div>
+
+<p>文档工具会把它们显示在属性的说明里，并用第一个值替换生成的示例数据里的 <code>"lorem …"</code>。</p>
+
+<div class="box warn">
+  <div class="t">&#9888; example 还是 examples</div>
+  <p>
+    单数的 <code>example</code> 是 OpenAPI 特有的写法，从 3.1 起已弃用，规范建议用 JSON Schema 标准的 <code>examples</code>（复数）。
+    但有些工具对 <code>examples</code> 的支持还不稳定、对 <code>example</code> 反而更好 —— 先确认你的工具支持哪个。
+  </p>
+</div>
+
+<h3>参数、请求体、响应体、响应头：OpenAPI 的 examples</h3>
+
+<p>
+  在这些元素的 <code>schema</code> <strong>旁边</strong>，可以放一个 OpenAPI 的 <code>examples</code> <strong>映射</strong>（注意：是映射不是列表）。每个示例有一个键、摘要、描述和值，工具支持得很好：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /transactions:
+    get:
+      responses:
+        "200":
+          description: Found transactions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Transactions"
+              examples:                       # 与 schema 同级
+                NoTransaction:                # 示例的键
+                  summary: No data found      # 文档工具常把它显示成标签页的名字
+                  description: Not a 404!
+                  value:                      # 值可以用 YAML 写，工具会转成 JSON
+                    data: []
+                Transactions:
+                  summary: Data found
+                  value:
+                    data:
+                      - id: trx-57645
+                        amount: 123.4
+                        label: Monthly saving
+</pre>
+</div>
+
+<div class="box tip">
+  <div class="t">&#128161; 写示例的省力办法</div>
+  <ul>
+    <li>把文档工具根据 schema 生成的示例复制出来，贴进 OpenAPI 文档，再改成真实的样子。</li>
+    <li>把 schema 贴给 AI，让它生成几个示例。</li>
+    <li>在 Spectral 规则集里启用内建规则 <code>oas3-valid-media-example</code> 和 <code>oas3-valid-schema-example</code>（第 18 章），自动检查示例是否符合它所说明的 schema。</li>
+  </ul>
+</div>
+
+<h3>共享示例</h3>
+
+<p>
+  指南规定所有搜索操作在没有结果时返回 <code>200</code> 和空的 <code>data</code>。每个搜索操作的 <code>data</code> 元素类型不同，所以没法共享整个响应 —— 但「空结果」这个<strong>示例</strong>是一样的，可以定义在组件库的 <code>components.examples</code> 里：
+</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+# ---------- library.openapi.yaml ----------
+components:
+  examples:
+    SearchNoData:
+      summary: No data found
+      description: Not a 404!
+      value:
+        data: []
+
+# ---------- banking.openapi.yaml ----------
+              examples:
+                NoTransaction:
+                  $ref: "https://guidelines.intra/library.openapi.yaml#/components/examples/SearchNoData"
+</pre>
+</div>
+
+<p>再配一条 lint 规则，要求所有搜索操作的 <code>200</code> 响应都引用这个示例 —— 它会时刻提醒大家：搜索不到东西<strong>不是</strong> <code>404</code>。</p>
+
+<h3>把请求和响应的示例对应起来</h3>
+
+<p>让同一场景下的请求示例和响应示例使用<strong>相同的键和摘要</strong>，读文档的人就能把它们对上：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+  /transfers:
+    post:
+      requestBody:
+        content:
+          application/json:
+            examples:
+              Success:                        # ← 相同的键
+                summary: Success              # ← 相同的摘要
+                value:
+                  amount: 12
+                  source: acc-12345
+                  destination: acc-54321
+      responses:
+        "201":
+          description: Money transfer done.
+          content:
+            application/json:
+              examples:
+                Success:
+                  summary: Success
+                  value:
+                    id: trf-56789
+                    amount: 12
+                    source: acc-12345
+                    destination: acc-54321
+</pre>
+</div>
+
+<div class="box warn">
+  <div class="t">&#9888; 设计阶段别在示例上投入过多</div>
+  <p>
+    OpenAPI 里请求和响应的示例是分开存放的，数量一多就难以维护。需要大量完整的「请求 + 响应」示例时，Postman Collection 是更合适的格式。
+    但更重要的是：我们现在是在帮助人们理解<strong>设计</strong>，不是在写公开门户的文档。成套的真实示例，等实现完成后从实际的请求和响应里取，要容易得多。
+  </p>
+</div>
+
+<div class="box deep">
+  <div class="t">&#128161; 以示例为中心的设计流程</div>
+  <p>
+    有些团队会采用另一种流程：分析完需求后，直接起草各个操作的请求和响应示例（比如用 Postman Collection）来支撑讨论。
+    它牺牲了一份独立而正式的事实来源，也会漏掉一些细节（哪些必填、哪些可选要到实现时才明确）；OpenAPI 文档改由代码生成，可能不如手写的完整，也用不上共享组件库。
+    但 linter 照样可以用，在实现过程中继续引导设计。是否采用取决于你的环境。
+  </p>
+</div>
+
+<h2 id="implementers">照顾实现者</h2>
+
+<h3>把实现备注放进产物里</h3>
+
+<p>设计过程中会收集到一些只和实现有关的信息。与其另存一份文档，不如放在 OpenAPI 文档里对应的位置：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+    Transaction:
+      properties:
+        label:
+          type: string
+          description: |
+            A human-readable description of the transaction.
+
+            ##### Implementation notes
+            Use `label` instead of the `description` column in the TRA02 table.
+    Account:
+      properties:
+        owners:
+          type: array
+          x-implementation-notes: Sort the owners list alphabetically.   # 或者用扩展属性
+</pre>
+</div>
+
+<ul>
+  <li>写在 <code>description</code> 里，用一个小标题（如五级标题）与契约信息隔开，免得在文档界面里喧宾夺主；</li>
+  <li>或者用 OpenAPI 的<strong>扩展机制</strong>：以 <code>x-</code> 开头的属性几乎可以加在文档的任何位置，普通的解析器会忽略它们；</li>
+  <li><strong>通用的</strong>实现提示（比如怎样实现游标分页）应该放在设计指南的相关章节，并在组件库的对应组件上加链接。</li>
+</ul>
+
+<div class="box warn">
+  <div class="t">&#9888; 对外发布前要清除</div>
+  <p>这些信息出现在私有 API 的文档里问题不大，但绝不能出现在给合作方或公众的文档里。如果套件是最终文档的基础，负责的人必须记得把它们删掉 —— 用 <code>jq</code>、<code>yq</code> 或几行脚本就能批量清理。</p>
+</div>
+
+<h3>让文档更适合代码生成</h3>
+
+<p>如果代码生成是你们流程的一部分，有三件事可以做：</p>
+<ul>
+  <li><strong>标签</strong>：生成器通常按标签把操作分到不同的类、模块或文件里（可以指定用哪些标签、忽略哪些，比如前面的概念和用例标签）。</li>
+  <li>
+    <strong><code>operationId</code></strong>：生成器默认根据方法和路径推断函数名，结果不一定好看，不同生成器之间也不一致。
+    给每个操作设一个 <code>operationId</code>（如 <code>searchTransfers</code>），生成器就会用它当函数名。可以启用 Spectral 内建的 <code>operation-operationId</code> 和 <code>operation-operationId-unique</code> 规则来保证它总是存在且唯一。
+  </li>
+  <li><strong>克制地使用 JSON Schema</strong>：<code>allOf</code> 这类组合关键字（第 17 章）有些生成器处理不好，要么报错要么生成很别扭的代码。必要时避开它们 —— 代价是文档的精确性或组织性。</li>
+</ul>
+
+<h2 id="mock">Mock 与原型</h2>
+
+<p>设计阶段让人能「调用」一下尚未开发的 API，常常能暴露出纸面上看不出的问题。</p>
+
+<div class="vs">
+  <div class="new">
+    <div class="h">基础 Mock：从 OpenAPI 文档一键生成</div>
+    <p style="padding:10px 14px;margin:0;font-size:14.5px">
+      用静态数据模拟 API。<a href="https://microcks.io">Microcks</a>、Postman、Prism 等工具可以直接读取 OpenAPI 文档，根据 schema（越精确越好）或示例返回数据，几乎不需要配置。
+      有些工具还能按 schema 校验输入，不过返回的错误未必符合你的设计。
+    </p>
+  </div>
+  <div class="old">
+    <div class="h">复杂 Mock：设计阶段慎做</div>
+    <p style="padding:10px 14px;margin:0;font-size:14.5px">
+      模板、脚本、在请求之间保存数据……这些能让 Mock 表现得很逼真。完整的 Mock <em>以后</em>很有用（消费方可以独立开发，公开 API 可以有演示环境），
+      但我们现在的重点是<strong>设计</strong>，不是把生命周期里可能用到的所有产物都做出来。
+    </p>
+  </div>
+</div>
+
+<div class="code" data-lang="bash">
+<pre>
+# 例：用 Prism 把 OpenAPI 文档变成一个 Mock 服务器
+npx @stoplight/prism-cli mock banking.openapi.yaml
+
+curl http://localhost:4010/transactions
+# → 根据文档里的示例或 schema 返回数据
+</pre>
+</div>
+
+<div class="box key">
+  <div class="t">&#9733; 需要逼真的行为时：做原型，而不是复杂的 Mock</div>
+  <p>
+    让实现者（也许就是你）搭一个<strong>早期的实现原型</strong>：先是一个返回静态数据的骨架（可以从 OpenAPI 文档生成），随着设计的细化逐步加上逻辑。
+    设计定稿后，在这个原型上继续开发即可，一点不浪费。
+  </p>
+</div>
+
+<h2 id="tests">功能测试</h2>
+
+<p>
+  测试在生命周期里是独立的阶段，涵盖数据、行为、性能、安全等很多方面，由不同的人在不同的时间完成。
+  但在设计阶段，由最了解预期的人 —— <strong>API 设计者</strong> —— 写一些功能测试放进套件，有时很有价值：
+</p>
+
+<div class="cards">
+  <div class="card"><span class="ic">&#129513;</span><h4>澄清复杂的逻辑</h4><p>接口设计得很简单，背后的逻辑却不容易实现对。OpenAPI 加文字说明仍然说不清时，几个测试胜过千言万语。</p></div>
+  <div class="card"><span class="ic">&#129309;</span><h4>让协作更顺畅</h4><p>设计和开发由不同的团队甚至第三方完成时，随套件交付功能测试能减少后期才暴露的错误。这时最好用与实现代码无关的可移植格式（如 Postman Collection）。</p></div>
+  <div class="card"><span class="ic">&#128207;</span><h4>设计标准 API</h4><p>由多个团队各自实现的标准 API（文件上传、健康检查）：提供现成的测试和一个参考实现，避免每个实现都重新发明一个有缺陷的版本。</p></div>
+</div>
+
+<p>
+  这些早期测试只覆盖实现的一部分，开发、QA 和安全人员还要补充各自的测试。下面是一组针对「搜索交易」和「转账」的功能测试，它们把前面各章的设计决定变成了可执行的断言：
+</p>
+
+<div class="tabs" data-title="随套件交付的功能测试">
+<div class="code" data-lang="python" data-file="pytest + httpx">
+<pre>
+import httpx, pytest
+
+@pytest.fixture
+def api():
+    # 可以指向 Mock、原型，或正在开发的实现
+    return httpx.Client(base_url="http://localhost:8080", headers={"Authorization": "Bearer test"})
+
+def test_search_without_result_returns_200_and_empty_list(api):
+    """指南：搜索不到东西不是 404"""
+    r = api.get("/accounts/acc-12345/transactions", params={"date": "1900-01-01"})
+    assert r.status_code == 200
+    assert r.json()["data"] == []
+
+def test_search_returns_default_pagination_metadata(api):
+    """不传分页参数时，元数据要说明实际使用的默认值"""
+    r = api.get("/accounts/acc-12345/transactions")
+    pagination = r.json()["metadata"]["pagination"]
+    assert pagination["size"] == 100
+    assert len(r.json()["data"]) &lt;= 100
+
+def test_transfer_creation_returns_201_location_and_complete_resource(api):
+    r = api.post("/transfers", headers={"Idempotency-Key": "t-001"},
+                 json={"source": "acc-12345", "destination": "acc-54321", "amount": {"value": 12}})
+    assert r.status_code == 201
+    body = r.json()
+    assert r.headers["Location"] == f"/transfers/{body['id']}"
+    assert body["amount"]["currency"] == "USD"          # 没传币种时使用默认值
+
+def test_invalid_transfer_returns_all_errors_at_once(api):
+    """复杂逻辑：结构检查和业务规则检查要一次做完，报全所有错误"""
+    r = api.post("/transfers", headers={"Idempotency-Key": "t-002"},
+                 json={"source": "acc-12345", "amount": {"value": 999999999, "currency": "JPY"}})
+    assert r.status_code == 422
+    assert r.headers["Content-Type"].startswith("application/problem+json")
+    pointers = {e["source"]["pointer"] for e in r.json()["errors"]}
+    assert {"#/destination", "#/amount/currency"} &lt;= pointers
+
+def test_unexpected_error_does_not_leak_implementation_details(api):
+    r = api.get("/__test__/boom")                       # 测试环境里故意触发 500 的端点
+    assert r.status_code == 500
+    assert set(r.json()) == {"status", "type", "title", "detail", "instance"}
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Vitest">
+<pre>
+import { describe, expect, it } from "vitest";
+
+// 可以指向 Mock、原型，或正在开发的实现
+const base = process.env.API_URL ?? "http://localhost:8080";
+const auth = { Authorization: "Bearer test" };
+const postJson = (path: string, body: unknown, headers = {}) =&gt;
+  fetch(base + path, {
+    method: "POST",
+    headers: { ...auth, "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+
+describe("search transactions", () =&gt; {
+  it("returns 200 and an empty list when nothing is found (not a 404)", async () =&gt; {
+    const r = await fetch(`${base}/accounts/acc-12345/transactions?date=1900-01-01`, { headers: auth });
+    expect(r.status).toBe(200);
+    expect((await r.json()).data).toEqual([]);
+  });
+
+  it("describes the default pagination in metadata", async () =&gt; {
+    const r = await fetch(`${base}/accounts/acc-12345/transactions`, { headers: auth });
+    const body = await r.json();
+    expect(body.metadata.pagination.size).toBe(100);
+    expect(body.data.length).toBeLessThanOrEqual(100);
+  });
+});
+
+describe("create transfer", () =&gt; {
+  it("returns 201, a Location header and the complete resource", async () =&gt; {
+    const r = await postJson("/transfers",
+      { source: "acc-12345", destination: "acc-54321", amount: { value: 12 } },
+      { "Idempotency-Key": "t-001" });
+    expect(r.status).toBe(201);
+    const body = await r.json();
+    expect(r.headers.get("Location")).toBe(`/transfers/${body.id}`);
+    expect(body.amount.currency).toBe("USD");           // 没传币种时使用默认值
+  });
+
+  it("returns all errors at once (schema and business rules)", async () =&gt; {
+    const r = await postJson("/transfers",
+      { source: "acc-12345", amount: { value: 999999999, currency: "JPY" } },
+      { "Idempotency-Key": "t-002" });
+    expect(r.status).toBe(422);
+    expect(r.headers.get("Content-Type")).toContain("application/problem+json");
+    const pointers = (await r.json()).errors.map((e: any) =&gt; e.source.pointer);
+    expect(pointers).toEqual(expect.arrayContaining(["#/destination", "#/amount/currency"]));
+  });
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="JUnit 5 + REST Assured">
+<pre>
+import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.*;
+
+class BankingApiFunctionalTest {
+
+    @BeforeAll
+    static void setup() {
+        // 可以指向 Mock、原型，或正在开发的实现
+        RestAssured.baseURI = System.getProperty("api.url", "http://localhost:8080");
+        RestAssured.requestSpecification = new RequestSpecBuilder()
+            .addHeader("Authorization", "Bearer test").setContentType(ContentType.JSON).build();
+    }
+
+    @Test
+    @DisplayName("搜索不到东西返回 200 和空列表，而不是 404")
+    void searchWithoutResult() {
+        given().queryParam("date", "1900-01-01")
+        .when().get("/accounts/acc-12345/transactions")
+        .then().statusCode(200).body("data", empty());
+    }
+
+    @Test
+    @DisplayName("不传分页参数时，元数据说明实际使用的默认值")
+    void searchDefaultPagination() {
+        given()
+        .when().get("/accounts/acc-12345/transactions")
+        .then().statusCode(200)
+               .body("metadata.pagination.size", equalTo(100))
+               .body("data.size()", lessThanOrEqualTo(100));
+    }
+
+    @Test
+    @DisplayName("创建转账返回 201、Location 头和完整的资源")
+    void createTransfer() {
+        String id =
+            given().header("Idempotency-Key", "t-001")
+                   .body(Map.of("source", "acc-12345", "destination", "acc-54321",
+                                "amount", Map.of("value", 12)))
+            .when().post("/transfers")
+            .then().statusCode(201)
+                   .body("amount.currency", equalTo("USD"))      // 没传币种时使用默认值
+                   .extract().path("id");
+        // Location 头必须指向刚创建的资源
+        given().when().get("/transfers/" + id).then().statusCode(200);
+    }
+
+    @Test
+    @DisplayName("无效的转账一次返回所有错误（结构检查 + 业务规则）")
+    void invalidTransferReturnsAllErrors() {
+        given().header("Idempotency-Key", "t-002")
+               .body(Map.of("source", "acc-12345",
+                            "amount", Map.of("value", 999999999, "currency", "JPY")))
+        .when().post("/transfers")
+        .then().statusCode(422)
+               .contentType(startsWith("application/problem+json"))
+               .body("errors.source.pointer", hasItems("#/destination", "#/amount/currency"));
+    }
+}
+</pre>
+</div>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 行业标准的合规测试</div>
+  <p>
+    为多个组织设计行业标准 API 时，需要全面的合规性测试和参考实现来验证各家的实现。
+    但那属于「最终文档」的范畴，和公开 API 的门户文档一样，不在设计阶段的范围内，可以推迟到标准生命周期的后期。
+  </p>
+</div>
+
+<h2 id="journey">回顾整个旅程</h2>
+
+<p>这是最后一章。把第 1 章的那张地图再拿出来 —— 现在每一格你都知道里面是什么了：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 360" role="img" aria-label="全书回顾：四个步骤和四个层次，以及每一部分对应的章节和产物">
+  <text class="ttl" x="20" y="22">四个步骤</text>
+  <rect class="bx-a" x="20" y="34" width="170" height="74" rx="10"/>
+  <text class="ttl on-a" x="105" y="56" text-anchor="middle">① 识别能力</text>
+  <text class="sm" x="105" y="76" text-anchor="middle">能力画布</text>
+  <text class="sm" x="105" y="94" text-anchor="middle">第 2 章</text>
+  <rect class="bx-a" x="203" y="34" width="170" height="74" rx="10"/>
+  <text class="ttl on-a" x="288" y="56" text-anchor="middle">② 设计接口</text>
+  <text class="sm" x="288" y="76" text-anchor="middle">资源 · HTTP · 数据模型</text>
+  <text class="sm" x="288" y="94" text-anchor="middle">第 3–5 章</text>
+  <rect class="bx-a" x="386" y="34" width="170" height="74" rx="10"/>
+  <text class="ttl on-a" x="471" y="56" text-anchor="middle">③ 描述接口</text>
+  <text class="sm" x="471" y="76" text-anchor="middle">OpenAPI · JSON Schema</text>
+  <text class="sm" x="471" y="94" text-anchor="middle">第 6、7、17 章</text>
+  <rect class="bx-a" x="569" y="34" width="171" height="74" rx="10"/>
+  <text class="ttl on-a" x="654" y="56" text-anchor="middle">④ 丰富产物</text>
+  <text class="sm" x="654" y="76" text-anchor="middle">设计参考套件</text>
+  <text class="sm" x="654" y="94" text-anchor="middle">第 19 章</text>
+  <path class="ln-a" d="M190 71 H201" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M373 71 H384" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M556 71 H567" marker-end="url(#ar-a)"/>
+
+  <text class="ttl" x="20" y="146">四个层次</text>
+  <rect class="bx-g" x="20" y="158" width="720" height="42" rx="10"/>
+  <text class="ttl on-g" x="36" y="184">做对的事、足够通用</text>
+  <text class="sm" x="724" y="184" text-anchor="end">满足需求 · 隐藏内部 · 不绑定某个消费者　　第 2–7 章</text>
+  <rect class="bx-b" x="20" y="208" width="720" height="42" rx="10"/>
+  <text class="ttl on-b" x="36" y="234">好用、可互操作</text>
+  <text class="sm" x="724" y="234" text-anchor="end">数据 → 操作 → 操作流 → API　　第 8–11 章</text>
+  <rect class="bx-p" x="20" y="258" width="720" height="42" rx="10"/>
+  <text class="ttl on-p" x="36" y="284">纳入约束</text>
+  <text class="sm" x="724" y="284" text-anchor="end">安全 · 效率 · 上下文 · 修改　　第 12–15 章</text>
+  <rect class="bx" x="20" y="308" width="720" height="42" rx="10"/>
+  <text class="ttl" x="36" y="334">有章法、持续改进的流程</text>
+  <text class="sm" x="724" y="334" text-anchor="end">决策与指南 · 优化 OpenAPI · 自动检查 · 参考套件　　第 16–19 章</text>
+</svg>
+<figcaption>图 19-3　四个步骤 × 四个层次</figcaption>
+</figure>
+
+<div class="box tip">
+  <div class="t">&#128161; 如果只带走几句话</div>
+  <ul>
+    <li>先弄清用户要做什么，再想接口长什么样 —— <strong>形式追随功能</strong>。</li>
+    <li>API 是给别人用的。<strong>从外向内看</strong>，别把自己的内部暴露出去，也别为某一个消费者量身定做。</li>
+    <li><strong>一致</strong>是好用和可互操作的共同基础：尊重 HTTP，采用标准，和自己保持一致。</li>
+    <li>安全、效率和可演进性是<strong>设计出来</strong>的，不是事后补上的。</li>
+    <li>把决定记下来、沉淀成指南、交给工具检查 —— 把脑子留给真正需要判断的事。</li>
+  </ul>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>API 设计参考套件包含完整描述一个 API 的产物和信息，在设计、开发、测试、部署、提供与消费的整个生命周期里都有用。</li>
+  <li>完整的套件覆盖：初始需求、用户、用例、操作、操作流、概念、操作的 HTTP 表示（路径、方法、数据、行为）、安全，以及实现方面的考虑。</li>
+  <li>它包括需求描述、能力画布、OpenAPI 文档、设计指南（含组件库和 linter），以及可选的 API 模拟（Mock 或原型）和功能测试。</li>
+  <li>画布、OpenAPI 文档和指南已经构成扎实的套件；可以增强，但要衡量投入。套件不是公开 API 的最终文档，却往往是私有 API 消费者唯一的资料。</li>
+  <li>在 <code>info.description</code> 里加一组链接，让 OpenAPI 文档成为中心枢纽；或用 <code>externalDocs</code> 指向资料的入口。</li>
+  <li>给操作打标签、用根级的 <code>tags</code> 列表排序，为概念和用例提供概览。</li>
+  <li>用范围、长度、正则、枚举、默认值让 JSON Schema 更精确，这对理解、代码生成、测试和 Mock 都有帮助。</li>
+  <li>用 JSON Schema 的 <code>examples</code> 说明单个数据；用 OpenAPI 带说明的 <code>examples</code> 映射说明参数、请求体、响应体和响应头；把共享的示例放进组件库。</li>
+  <li>用 <code>description</code> 或自定义的 <code>x-</code> 扩展在需要的地方添加实现备注；对外发布前清除。</li>
+  <li>如果代码生成是流程的一部分，相应地调整 OpenAPI 和 JSON Schema 的用法（标签、<code>operationId</code>、慎用组合关键字）。</li>
+  <li>可以用 OpenAPI 文档生成一个基础的 Mock，帮助思考和讨论设计；需要更逼真的行为时，考虑做早期的实现原型。</li>
+  <li>当需要向实现者澄清特定的逻辑，或者实现由另一个团队或第三方完成时，考虑在设计阶段创建功能测试。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      一份 OpenAPI 文档有四个操作：<code>GET /authors</code>（返回作者）、<code>GET /authors/{authorId}/books</code>（返回图书）、<code>GET /books</code>（返回图书）、<code>GET /books/{bookId}/authors</code>（返回作者）。
+      修改它，让文档工具按操作<em>返回的数据</em>把它们分成 Book 和 Author 两组，并且按这个顺序显示。
+      <details class="ans"><summary>参考答案</summary>
+        按返回的数据而不是按路径分组：<code>/authors</code> 和 <code>/books/{bookId}/authors</code> 的 <code>get</code> 加 <code>tags: [Author]</code>；
+        <code>/books</code> 和 <code>/authors/{authorId}/books</code> 的 <code>get</code> 加 <code>tags: [Book]</code>。
+        然后在根级加 <code>tags: [{name: Book}, {name: Author}]</code> 来控制顺序。（仓库：<code>19. …/Listing 19.1</code>。）
+      </details>
+    </li>
+    <li>
+      补全 <code>Speed</code> 和 <code>Speeds</code> 两个 schema：<code>id</code> 以 <code>sp-</code> 开头，后跟三个 a–z 的字母和至少一位数字（并加一个示例）；
+      <code>value</code> 大于 0，默认 0；<code>unit</code> 只能是 <code>kph</code> 或 <code>mph</code>，默认 <code>kph</code>；<code>direction</code> 大于等于 0、小于 360；
+      速度列表包含 1 到 100 个对象。另外告诉实现者：<code>direction</code> 来自 <code>ZSPD</code> 表的 <code>SPD23</code> 列。
+      <details class="ans"><summary>参考答案</summary>
+<div class="code" data-lang="yaml"><pre>
+components:
+  schemas:
+    Speed:
+      properties:
+        id:
+          type: string
+          pattern: "^sp-[a-z]{3}[0-9]+$"
+          examples:
+            - sp-abc123
+        date:
+          type: string
+          format: date-time
+        value:
+          type: number
+          exclusiveMinimum: 0
+          default: 0            # 题目如此要求；注意它与「大于 0」其实是矛盾的，值得向需求方确认
+        unit:
+          type: string
+          enum: [kph, mph]
+          default: kph
+        direction:
+          type: integer
+          minimum: 0
+          exclusiveMaximum: 360
+          x-implementation-notes: Comes from the SPD23 column of the ZSPD table.
+    Speeds:
+      type: array
+      minItems: 1
+      maxItems: 100
+      items:
+        $ref: "#/components/schemas/Speed"
+</pre></div>
+        仓库的 <code>19. …/Listing 19.2</code> 是原题，<code>Appendix …/Listing A.34</code> 是书中的答案。
+      </details>
+    </li>
+    <li>把第 6 章末尾的 OpenAPI 文档加上 <code>examples</code> 和 <code>operationId</code>，用 Prism 启动一个 Mock，然后把本章的功能测试改一改去调用它。哪些测试能通过？哪些必须等真正的实现？这个差别说明了什么？</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

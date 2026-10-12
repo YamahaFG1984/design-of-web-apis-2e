@@ -1,0 +1,852 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 17 章 · 优化 OpenAPI 文档 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="17">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 17 章</span>
+<h1>优化 OpenAPI 文档</h1>
+<p class="lede">
+  第 6 章结束时，我们的文档里 <code>500</code> 响应写了五遍。现在想给所有 <code>500</code> 加一个 <code>Error-Id</code> 响应头 —— 得改五处，漏一处就不一致了。
+  商品 ID 在路径参数里是整数、在某个模型里又成了字符串。
+  重复不只是麻烦，它是<strong>不一致的温床</strong>。这一章学习用 OpenAPI 和 JSON Schema 的复用机制把重复消掉。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>知道什么时候做优化（以及为什么要和设计分开）</li>
+    <li>让 schema 保持一致：复用、深层引用、覆盖描述、读写合一、<code>allOf</code></li>
+    <li>让参数、请求体、响应头、响应保持一致：<code>components</code> 下的各种可复用元素</li>
+    <li>建立跨 API 共享的 OpenAPI 组件库</li>
+    <li>把 OpenAPI 的写法也纳入设计指南</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="overview">优化什么、什么时候优化</h2>
+
+<p>优化 OpenAPI 文档有两个目的：<strong>保证 API 设计的一致性</strong>，以及<strong>让文档更容易编写和维护</strong>。</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 180" role="img" aria-label="设计接口的三步与描述接口的三步并行，优化 OpenAPI 是描述的第三步">
+  <text class="ttl" x="20" y="24">设计编程接口</text>
+  <rect class="bx" x="20" y="36" width="226" height="40" rx="8"/><text x="133" y="61" text-anchor="middle">从 REST 视角观察</text>
+  <rect class="bx" x="267" y="36" width="226" height="40" rx="8"/><text x="380" y="61" text-anchor="middle">用 HTTP 表示操作</text>
+  <rect class="bx" x="514" y="36" width="226" height="40" rx="8"/><text x="627" y="61" text-anchor="middle">数据建模</text>
+
+  <text class="ttl" x="20" y="112">描述编程接口</text>
+  <rect class="bx" x="20" y="124" width="226" height="40" rx="8"/><text x="133" y="149" text-anchor="middle">描述 HTTP 操作（第 6 章）</text>
+  <rect class="bx" x="267" y="124" width="226" height="40" rx="8"/><text x="380" y="149" text-anchor="middle">描述数据（第 7 章）</text>
+  <rect class="bx-a" x="514" y="124" width="226" height="40" rx="8"/><text class="on-a" x="627" y="149" text-anchor="middle" font-weight="700">优化 OpenAPI（本章）</text>
+
+  <path class="ln-d" d="M380 76 V122" marker-end="url(#ar)"/>
+  <path class="ln-d" d="M627 76 C627 100 400 100 392 122" marker-end="url(#ar)"/>
+  <path class="ln-a" d="M246 144 H265" marker-end="url(#ar-a)"/>
+  <path class="ln-a" d="M493 144 H512" marker-end="url(#ar-a)"/>
+</svg>
+<figcaption>图 17-1　优化是「描述」的第三步，放在设计完成之后</figcaption>
+</figure>
+
+<div class="box key">
+  <div class="t">&#9733; 先把设计做对，再优化文档</div>
+  <p>
+    不要让 OpenAPI 的技巧干扰关于 HTTP 和数据建模的讨论。先把必要的信息写进文档，之后再看能怎么优化。
+    有了经验以后，你会自然而然地在设计时就用上其中一些技巧，写得更快 —— 但初学时、或者对比较复杂的技巧，分成单独的一步更稳妥。
+  </p>
+</div>
+
+<h2 id="schemas">让数据模型保持一致</h2>
+
+<h3>① 复用 schema（复习）</h3>
+
+<p>第 7 章已经学过：把模型定义在 <code>components.schemas</code> 下，用 <code>$ref</code> 引用。</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：17. …/Listing 17.1">
+<pre>
+paths:
+  /products:
+    get:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ProductSummary"
+components:
+  schemas:
+    SupplierSummary: ...
+    Product:
+      properties:
+        supplier:
+          $ref: "#/components/schemas/SupplierSummary"     # 两个模型共用
+    ProductSummary:
+      properties:
+        supplier:
+          $ref: "#/components/schemas/SupplierSummary"     # 同一个子模型
+</pre>
+</div>
+
+<p>
+  建议把<strong>所有资源模型</strong>（包括完整版、摘要版等各种形态）都定义成可复用的 schema：它们集中在一处，便于阅读和复用，也可以先建模再使用。
+  被多个资源模型共用的子模型（<code>SupplierSummary</code>）也放在这里。代价是 <code>components.schemas</code> 里可能塞满各种小工具 schema —— 排序时把资源模型放前面、工具模型放后面会好一些。
+</p>
+
+<h3>② 深层引用：指向 schema 的一部分</h3>
+
+<p>
+  商品 ID 出现在三个地方：<code>Product.id</code>、<code>ProductSummary.id</code> 和路径参数 <code>productId</code>。
+  可以定义一个 <code>ProductId</code> 小 schema 让三处都引用它 —— 但那样很快就会有 <code>OrderId</code>、<code>SupplierId</code>……一大堆微型 schema。
+  换个办法：把完整的定义写在 <code>Product</code> 的 <code>id</code> 属性上（<code>Product</code> 本来就是所有商品数据的源头），其他地方用<strong>深层引用</strong>指向它：
+</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：17. …/Listing 17.3">
+<pre>
+paths:
+  /products/{productId}:
+    parameters:
+      - name: productId
+        in: path
+        required: true
+        schema:
+          $ref: "#/components/schemas/Product/properties/id"     # 指向 Product 里的 id 属性
+components:
+  schemas:
+    ProductSummary:
+      properties:
+        id:
+          $ref: "#/components/schemas/Product/properties/id"     # 同一个定义
+    Product:
+      properties:
+        id:                              # 唯一的定义处
+          title: ProductId               # 工具里会显示在类型旁边：string (ProductId)
+          description: Product unique identifier
+          type: string
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 130" role="img" aria-label="深层引用的 JSON Pointer 逐段指向 Product schema 内部的 id 属性">
+  <text class="mono" x="380" y="44" text-anchor="middle" style="font-size:17px"><tspan class="on-p">#</tspan>/<tspan class="on-b">components/schemas</tspan>/<tspan class="on-a" font-weight="700">Product</tspan>/<tspan class="on-g" font-weight="700">properties/id</tspan></text>
+  <path class="ln-b" d="M280 54 V72"/><text class="lbl on-b" x="280" y="90" text-anchor="middle">可复用 schema 所在处</text>
+  <path class="ln-a" d="M452 54 V72"/><text class="lbl on-a" x="452" y="90" text-anchor="middle">某个 schema</text>
+  <path class="ln-g" d="M570 54 V72"/><text class="lbl on-g" x="590" y="90" text-anchor="middle">继续往里走：它的 id 属性</text>
+  <text class="sm" x="380" y="118" text-anchor="middle">JSON Pointer 可以指向文档里的任何位置，不限于 components 的第一层</text>
+</svg>
+<figcaption>图 17-2　深层引用对任何 schema 都适用，不只是原子类型</figcaption>
+</figure>
+
+<h3>③ 覆盖引用的描述</h3>
+
+<p>引用一个通用的 schema 时，它原本的描述往往太泛。在 <code>$ref</code> 旁边写一个 <code>description</code> 就能替换掉它：</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：17. …/Listing 17.2">
+<pre>
+components:
+  schemas:
+    Amount:
+      description: An amount of money          # 通用的描述
+      type: number
+    Product:
+      properties:
+        price:
+          description: The product's price in USD     # 覆盖：结合上下文的描述
+          $ref: "#/components/schemas/Amount"
+    Order:
+      properties:
+        total:
+          description: The total amount
+          $ref: "#/components/schemas/Amount"
+</pre>
+</div>
+
+<p>OpenAPI 3.1 允许对<strong>任何</strong>用 <code>$ref</code> 引用的元素覆盖 <code>summary</code> 和 <code>description</code>。</p>
+
+<div class="box warn">
+  <div class="t">&#9888; OpenAPI 3.0 不支持</div>
+  <p>
+    3.0 的工具会忽略 <code>$ref</code> 旁边的 <code>description</code>，或者直接报解析错误。可以用 <code>allOf</code> 模拟类似的效果，但那会让文档变得难读 —— 不如升级到 3.1。
+  </p>
+</div>
+
+<h3>④ 读写合一的模型</h3>
+
+<p>
+  第 7 章为了得到创建/替换模型，把 <code>Product</code> 复制了一份再删掉服务端管理的属性。两份几乎一样的 schema 迟早会各自跑偏。
+  JSON Schema 的 <strong><code>readOnly</code></strong> 和 <strong><code>writeOnly</code></strong> 标志让一个 schema 身兼两职：
+</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：17. …/Listing 17.4、17.5">
+<pre>
+components:
+  schemas:
+    Product:
+      properties:
+        id:
+          readOnly: true          # 只出现在响应里（由服务端生成）
+          type: string
+        name:
+          type: string
+        price:
+          type: number
+        dateAdded:
+          readOnly: true
+          type: string
+          format: date
+
+paths:
+  /products/{productId}:
+    get:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Product"      # 响应：包含 readOnly 属性
+    put:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Product"        # 请求：自动排除 readOnly 属性
+</pre>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 200" role="img" aria-label="同一个 Product schema 用在请求里时不含 readOnly 属性，用在响应里时不含 writeOnly 属性">
+  <rect class="bx-a" x="270" y="20" width="220" height="160" rx="12"/>
+  <text class="ttl on-a" x="380" y="44" text-anchor="middle">Product（唯一的 schema）</text>
+  <rect class="bx-g" x="286" y="56" width="188" height="24" rx="5"/><text class="mono sm" x="296" y="73">id</text><text class="sm on-g" x="464" y="73" text-anchor="end">readOnly</text>
+  <rect class="bx" x="286" y="84" width="188" height="24" rx="5"/><text class="mono sm" x="296" y="101">name</text>
+  <rect class="bx" x="286" y="112" width="188" height="24" rx="5"/><text class="mono sm" x="296" y="129">price</text>
+  <rect class="bx-g" x="286" y="140" width="188" height="24" rx="5"/><text class="mono sm" x="296" y="157">dateAdded</text><text class="sm on-g" x="464" y="157" text-anchor="end">readOnly</text>
+
+  <rect class="bx-b" x="16" y="56" width="230" height="88" rx="10"/>
+  <text class="ttl on-b" x="131" y="80" text-anchor="middle">用在请求里</text>
+  <text class="mono sm" x="131" y="104" text-anchor="middle">{ name, price }</text>
+  <text class="sm" x="131" y="128" text-anchor="middle">POST / PUT 的请求体</text>
+  <path class="ln-b" d="M270 100 H248" marker-end="url(#ar-b)"/>
+
+  <rect class="bx-g" x="514" y="56" width="230" height="88" rx="10"/>
+  <text class="ttl on-g" x="629" y="80" text-anchor="middle">用在响应里</text>
+  <text class="mono sm" x="629" y="104" text-anchor="middle">{ id, name, price, dateAdded }</text>
+  <text class="sm" x="629" y="128" text-anchor="middle">GET / POST / PUT 的响应体</text>
+  <path class="ln-g" d="M490 100 H512" marker-end="url(#ar-g)"/>
+</svg>
+<figcaption>图 17-3　一个 schema，两种用法</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">&#9888; 慎用 writeOnly</div>
+  <p>
+    <code>writeOnly</code> 表示「只出现在请求里」。它通常意味着输入和输出的<strong>结构</strong>有差异 —— 而第 9 章说过，应该尽量让输入与输出对应，
+    这样消费者才能把读到的数据改一改就直接发回去。（密码这类只写不读的数据是合理的例外。）
+  </p>
+</div>
+
+<p>这个技巧在代码里也有直接的对应物 —— 同一个类，某些字段只在序列化（输出）时出现：</p>
+
+<div class="tabs" data-title="代码中的 readOnly：一个模型，输入输出共用">
+<div class="code" data-lang="python" data-file="Pydantic / FastAPI">
+<pre>
+from datetime import date
+from pydantic import BaseModel, Field
+
+class Product(BaseModel):
+    # json_schema_extra 让生成的 OpenAPI 里带上 readOnly: true
+    id: str | None = Field(default=None, json_schema_extra={"readOnly": True})
+    name: str
+    price: float
+    dateAdded: date | None = Field(default=None, json_schema_extra={"readOnly": True})
+
+@app.put("/products/{product_id}", response_model=Product)
+def replace_product(product_id: str, body: Product) -&gt; Product:
+    # 请求里即使带了 id / dateAdded 也不采用：它们由服务端管理（第 9 章的「宽进」）
+    stored = products.replace(product_id, name=body.name, price=body.price)
+    return Product(**stored)        # 响应里包含 id 和 dateAdded
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Zod">
+<pre>
+import { z } from "zod";
+
+// 唯一的事实来源
+const Product = z.object({
+  id: z.string(),                    // 服务端生成（readOnly）
+  name: z.string(),
+  price: z.number(),
+  dateAdded: z.string().date(),      // 服务端生成（readOnly）
+});
+
+// 输入形态：从同一个 schema 派生，去掉只读属性 —— 不是另写一份
+const READ_ONLY = { id: true, dateAdded: true } as const;
+const ProductInput = Product.omit(READ_ONLY);
+
+type Product = z.infer&lt;typeof Product&gt;;            // { id, name, price, dateAdded }
+type ProductInput = z.infer&lt;typeof ProductInput&gt;;  // { name, price }
+
+app.put("/products/:productId", async (c) =&gt; {
+  // z.object 默认丢弃多余的属性：请求里带了 id 也不会报错（第 9 章的「宽进」）
+  const input = ProductInput.parse(await c.req.json());
+  const stored: Product = products.replace(c.req.param("productId"), input);
+  return c.json(stored);
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Jackson + Spring Boot">
+<pre>
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonProperty.Access;
+
+// 一个类，输入输出共用
+public record Product(
+    @JsonProperty(access = Access.READ_ONLY) String id,           // 只序列化（输出），反序列化时忽略
+    String name,
+    BigDecimal price,
+    @JsonProperty(access = Access.READ_ONLY) LocalDate dateAdded
+) {}
+
+@PutMapping("/products/{productId}")
+public Product replaceProduct(@PathVariable String productId, @RequestBody Product body) {
+    // body.id() 和 body.dateAdded() 一定是 null：即使请求里带了，Jackson 也会忽略
+    return products.replace(productId, body.name(), body.price());   // 返回值里两者都有
+}
+// springdoc 会据此在生成的 OpenAPI 里标上 readOnly: true
+</pre>
+</div>
+</div>
+
+<h3>⑤ 用 allOf 从摘要构造完整模型</h3>
+
+<p>
+  摘要是完整模型的子集。之前是复制粘贴出来的，同样有跑偏的风险。JSON Schema 的 <strong><code>allOf</code></strong>（「同时满足列表里的所有 schema」）可以反过来：
+  <strong>完整模型 = 摘要 + 其余属性</strong>。
+</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：17. …/Listing 17.6">
+<pre>
+components:
+  schemas:
+    ProductSummary:                 # 摘要：照常定义
+      required: [id, name, price]
+      properties:
+        id: ...
+        name: ...
+        price: ...
+    Product:                        # 完整模型
+      allOf:                        # 合并下面的所有 schema
+        - $ref: "#/components/schemas/ProductSummary"     # ① 摘要里的一切
+        - required: [dateAdded, supplier]                 # ② 只属于完整模型的其余属性
+          properties:
+            description: ...
+            dateAdded: ...
+            supplier: ...
+</pre>
+</div>
+
+<p>它和读写合一的技巧完全兼容：<code>readOnly</code> 标志可以写在摘要里，也可以写在 <code>allOf</code> 的第二项里。</p>
+
+<h3>优化要有度</h3>
+
+<div class="box warn">
+  <div class="t">&#9888; 一点重复有时比一堆技巧好</div>
+  <p>
+    优化过头的文档 —— 尤其是大量使用 <code>allOf</code> 的 —— 可能变得很难读懂。意识到这一点就好，不必太纠结：<strong>有少量重复的文档也许反而更容易维护</strong>。
+    JSON Schema 还有 <code>anyOf</code>、<code>oneOf</code> 等用于多态的关键字，组合起来会更复杂，而且有些关键字和代码生成器不兼容（第 19 章）。
+  </p>
+</div>
+
+<h2 id="params">让参数保持一致</h2>
+
+<h3>路径级参数</h3>
+<p>
+  路径参数<strong>永远</strong>定义在路径级的 <code>parameters</code> 里（第 6 章），免得在每个操作里重复。
+  但路径级参数不限于路径参数：任何被该路径下<em>所有</em>操作共用的参数都可以放在这里，比如一个表示 API 版本的请求头：
+</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：17. …/Listing 17.7">
+<pre>
+paths:
+  /products/{productId}:
+    parameters:
+      - name: productId
+        in: path
+        required: true
+        schema: ...
+      - name: Version               # 请求头，对 get / put / delete 都生效
+        in: header
+        required: true
+        schema:
+          type: string
+          const: "2"                # const：唯一允许的值
+    get: ...
+    put: ...
+    delete: ...
+</pre>
+</div>
+
+<p>遗憾的是，OpenAPI 3 没有办法为「所有路径的所有操作」统一定义参数。但可以做到只<em>定义</em>一次、到处<em>引用</em>：</p>
+
+<h3>可复用的参数</h3>
+
+<div class="code" data-lang="yaml" data-file="仓库：17. …/Listing 17.8、17.9">
+<pre>
+components:
+  parameters:                       # 可复用参数的定义处
+    ProductId:                      # 标识符（不是参数名）
+      name: productId               # 内容与 parameters 列表里的一项完全相同
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/Product/properties/id"
+
+paths:
+  /products/{productId}:
+    parameters:
+      - $ref: "#/components/parameters/ProductId"          # 别忘了前面的短横线
+  /products/{productId}/suppliers:
+    parameters:
+      - description: Same as in Read Product               # 同样可以覆盖描述
+        $ref: "#/components/parameters/ProductId"
+</pre>
+</div>
+
+<h3>一组查询参数</h3>
+
+<p>
+  分页需要 <code>next</code> 和 <code>limit</code> 两个参数。逐个定义、逐个引用既啰嗦又容易漏。
+  一个巧妙的办法：定义<strong>一个对象类型的查询参数</strong>。按 OpenAPI 的默认序列化规则，对象的每个属性会展开成一个独立的查询参数。
+</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：17. …/Listing 17.10、17.11">
+<pre>
+components:
+  parameters:
+    Pagination:
+      name: pagination              # 只在文档里显示，不会出现在请求中
+      description: |
+        Pagination parameters (`.../?next=s00999&amp;limit=10`)
+      in: query
+      schema:
+        type: object                # 对象 → 每个属性序列化成一个查询参数
+        properties:
+          next:
+            description: Next page cursor
+            type: string
+          limit:
+            description: Number of elements per page
+            type: number
+
+paths:
+  /products:
+    get:
+      parameters:
+        - $ref: "#/components/parameters/Pagination"     # 一次引用，得到 next 和 limit 两个参数
+</pre>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; 这个技巧不常见</div>
+  <p>
+    它很强大，但少有人用，有些工具渲染出来的效果也不够清楚。所以要像上面那样在 <code>description</code> 里明确说明用法，并指出 <code>pagination</code> 这个名字不会出现在请求里。
+    它也<strong>不能</strong>用来定义一组请求头 —— 被序列化的是参数的<em>内容</em>，不会变成多个头。
+  </p>
+</div>
+
+<h2 id="bodies">让请求体和响应保持一致</h2>
+
+<p><code>components</code> 下还有三种可复用的元素，定义和使用的方式与 schema、参数如出一辙：</p>
+
+<div class="tw">
+<table>
+  <tr><th>元素</th><th>定义在</th><th>引用</th><th>典型用途</th></tr>
+  <tr><td>请求体</td><td><code>components.requestBodies</code></td><td><code>#/components/requestBodies/{Id}</code></td><td>创建和替换操作共用同一个请求体</td></tr>
+  <tr><td>响应头</td><td><code>components.headers</code></td><td><code>#/components/headers/{Id}</code></td><td>所有 <code>201</code> 都返回的 <code>Location</code></td></tr>
+  <tr><td>响应</td><td><code>components.responses</code></td><td><code>#/components/responses/{Id}</code></td><td>所有操作共用的 <code>500</code>；读取和更新共用的 <code>404</code></td></tr>
+</table>
+</div>
+
+<h3>可复用的请求体</h3>
+
+<div class="code" data-lang="yaml" data-file="仓库：17. …/Listing 17.12、17.13">
+<pre>
+components:
+  requestBodies:
+    ProductCreateOrReplace:
+      description: Product info
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Product"
+
+paths:
+  /products:
+    post:
+      requestBody:
+        $ref: "#/components/requestBodies/ProductCreateOrReplace"
+  /products/{productId}:
+    put:
+      requestBody:
+        description: |
+          Extra properties are ignored. The complete Product data
+          returned by Read product is accepted.
+        $ref: "#/components/requestBodies/ProductCreateOrReplace"
+</pre>
+</div>
+
+<h3>可复用的响应头和响应</h3>
+
+<div class="code" data-lang="yaml" data-file="仓库：17. …/Listing 17.14 – 17.17">
+<pre>
+components:
+  headers:
+    ResourceLocation:               # 标识符，不是头的名字
+      description: Created resource URL
+      schema:
+        type: string
+  responses:
+    ResourceNotFound:               # 通用的「资源不存在」
+      description: No resource was found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"            # 可复用元素可以引用别的可复用元素
+    ProductNotFound:                # 基于通用响应、只换了描述的特化版本
+      description: No product was found
+      $ref: "#/components/responses/ResourceNotFound"
+    UnexpectedError:
+      description: Unexpected server error
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/UnexpectedError"
+
+paths:
+  /products:
+    post:
+      responses:
+        "201":
+          headers:
+            Location:               # 头的名字必须在这里写出
+              description: The created product's URL
+              $ref: "#/components/headers/ResourceLocation"
+        "500":
+          $ref: "#/components/responses/UnexpectedError"
+  /products/{productId}:
+    get:
+      responses:
+        "404":                      # 状态码必须在这里写出
+          $ref: "#/components/responses/ProductNotFound"
+        "500":
+          $ref: "#/components/responses/UnexpectedError"
+    put:
+      responses:
+        "404":
+          $ref: "#/components/responses/ProductNotFound"
+        "500":
+          $ref: "#/components/responses/UnexpectedError"
+</pre>
+</div>
+
+<div class="box note">
+  <div class="t">&#9432; OpenAPI 自己也有不一致的地方</div>
+  <ul>
+    <li>可复用的<strong>参数</strong>自带名字（<code>name</code>），可复用的<strong>响应头</strong>却不带 —— 头的名字是使用处的键。请求头要定义成 <code>in: header</code> 的可复用参数，而不是放在 <code>components.headers</code> 里。</li>
+    <li>可复用的<strong>响应</strong>不包含状态码 —— 状态码是使用处的键。</li>
+  </ul>
+  <p>这是格式设计上已知的不足，未来的版本会改进。你看，连 OpenAPI 这样的格式也有设计不一致、可以改进的地方 —— 本教程讲的东西同样适用于设计这类格式。</p>
+</div>
+
+<p>现在回到本章开头的问题：给所有 <code>500</code> 加一个 <code>Error-Id</code> 头 —— 只需要改 <code>UnexpectedError</code> 这一处。</p>
+
+<h2 id="library">跨 API 共享的组件库</h2>
+
+<p>
+  统一的错误模型、分页参数、<code>500</code> 响应……这些东西在<strong>所有 API</strong> 里都应该一模一样。把它们放进一个（或几个）<strong>OpenAPI 组件库</strong>，
+  各个 API 的文档都去引用。这样的库是设计指南的一部分（第 16 章），也是 API 治理的有力工具。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="多个 API 的 OpenAPI 文档引用同一个共享组件库">
+  <rect class="bx-a" x="270" y="20" width="220" height="110" rx="12"/>
+  <text class="ttl on-a" x="380" y="44" text-anchor="middle">shared-components.yaml</text>
+  <text class="mono sm" x="290" y="66">schemas:    Errors</text>
+  <text class="mono sm" x="290" y="82">parameters: Pagination</text>
+  <text class="mono sm" x="290" y="98">headers:    ResourceLocation</text>
+  <text class="mono sm" x="290" y="114">responses:  ResourceNotFound</text>
+
+  <rect class="bx-b" x="20" y="160" width="200" height="50" rx="10"/>
+  <text class="ttl on-b" x="120" y="182" text-anchor="middle">Shopping API</text><text class="mono sm" x="120" y="200" text-anchor="middle">shopping.openapi.yaml</text>
+  <rect class="bx-b" x="280" y="160" width="200" height="50" rx="10"/>
+  <text class="ttl on-b" x="380" y="182" text-anchor="middle">Order API</text><text class="mono sm" x="380" y="200" text-anchor="middle">order.openapi.yaml</text>
+  <rect class="bx-b" x="540" y="160" width="200" height="50" rx="10"/>
+  <text class="ttl on-b" x="640" y="182" text-anchor="middle">Supplier API</text><text class="mono sm" x="640" y="200" text-anchor="middle">supplier.openapi.yaml</text>
+
+  <path class="ln-b" d="M120 160 C120 110 220 90 268 86" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M380 160 V132" marker-end="url(#ar-b)"/>
+  <path class="ln-b" d="M640 160 C640 110 540 90 492 86" marker-end="url(#ar-b)"/>
+  <text class="mono sm" x="150" y="126">$ref</text>
+  <text class="mono sm" x="390" y="150">$ref</text>
+  <text class="mono sm" x="586" y="126">$ref</text>
+</svg>
+<figcaption>图 17-4　改一处，所有 API 的定义同步更新 —— 所以也要小心：库里的破坏性修改会影响所有引用它的 API</figcaption>
+</figure>
+
+<h3>定义库</h3>
+
+<p>库本身是一份<strong>合法的 OpenAPI 文件</strong>，只是没有 <code>paths</code>：</p>
+
+<div class="code" data-lang="yaml" data-file="shared-components.yaml（仓库：17. …/Listing 17.18）">
+<pre>
+openapi: 3.1.0
+info:
+  title: Shared components
+  version: "1.0"            # 这个库自己的版本，与引用它的 API 的版本无关
+                            # 没有 paths，也没有 webhooks
+components:
+  schemas:
+    Errors: ...
+  parameters:
+    Pagination: ...
+  headers:
+    ResourceLocation: ...
+  responses:
+    ResourceNotFound: ...
+</pre>
+</div>
+
+<p>
+  <code>components</code> 下除了 <code>securitySchemes</code> 之外的元素都可以这样共享（安全方案是按名字而不是按 <code>$ref</code> 使用的，这也是 OpenAPI 的一个设计局限）。
+</p>
+
+<h3>引用库里的组件</h3>
+
+<p><code>$ref</code> 的值变成「<strong>文件的路径或 URL</strong> + <strong>文件内的 JSON Pointer</strong>」：</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：17. …/Listing 17.19">
+<pre>
+openapi: 3.1.0
+info:
+  title: Shopping
+  version: "2.3"
+paths:
+  /products:
+    get:
+      parameters:
+        - $ref: "/path/to/shared-components.yaml#/components/parameters/Pagination"
+        #        └────── 相对或绝对的路径/URL ──────┘└────── 文件内的 JSON Pointer ──────┘
+</pre>
+</div>
+
+<p>相对路径是相对于<strong>发出引用的那个文件</strong>的位置计算的。两个文件在同一目录时写 <code>"shared-components.yaml#/components/…"</code> 即可。</p>
+
+<h3>解析跨文件的引用</h3>
+
+<p>
+  有些工具（比如代码生成器）不支持拆分成多个文件的 OpenAPI 文档。这时需要先把它们<strong>打包（bundle）</strong>成一个文件 —— 作者推荐 Redocly CLI：
+</p>
+
+<div class="code" data-lang="bash">
+<pre>
+npx @redocly/cli bundle shopping.openapi.yaml -o bundled.openapi.yaml
+</pre>
+</div>
+
+<p>各语言的 OpenAPI 解析库也都能在读取时自动解析引用。下面的代码读入一个引用了共享库的文档，输出解析后的结果：</p>
+
+<div class="tabs" data-title="读取文档并解析所有 $ref（含跨文件的）">
+<div class="code" data-lang="python">
+<pre>
+# pip install prance openapi-spec-validator
+from prance import ResolvingParser
+
+# 读取 shopping.openapi.yaml，并把所有 $ref（本地的和跨文件的）替换成它们指向的内容
+parser = ResolvingParser("shopping.openapi.yaml")
+doc = parser.specification
+
+params = doc["paths"]["/products"]["get"]["parameters"]
+print(params[0]["name"], "←", params[0]["schema"]["properties"].keys())
+# pagination ← dict_keys(['next', 'limit'])     # 引用已经被库里的定义替换
+
+# 想自己动手也不难：JSON Pointer 就是一条逐段往下走的路径
+def resolve_pointer(document: dict, pointer: str):
+    node = document
+    for part in pointer.lstrip("#/").split("/"):
+        node = node[part.replace("~1", "/").replace("~0", "~")]   # JSON Pointer 的转义规则
+    return node
+
+print(resolve_pointer(doc, "#/components/schemas/Product/properties/id"))
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+// npm install @apidevtools/swagger-parser
+import SwaggerParser from "@apidevtools/swagger-parser";
+
+// bundle：把跨文件的 $ref 收拢成只含内部 $ref 的单个文档
+const bundled = await SwaggerParser.bundle("shopping.openapi.yaml");
+
+// dereference：把所有 $ref 都替换成它们指向的内容
+const doc: any = await SwaggerParser.dereference("shopping.openapi.yaml");
+
+const params = doc.paths["/products"].get.parameters;
+console.log(params[0].name, "←", Object.keys(params[0].schema.properties));
+// pagination ← [ 'next', 'limit' ]     // 引用已经被库里的定义替换
+
+// 想自己动手也不难：JSON Pointer 就是一条逐段往下走的路径
+function resolvePointer(document: any, pointer: string): unknown {
+  return pointer
+    .replace(/^#\//, "")
+    .split("/")
+    .map((part) =&gt; part.replace(/~1/g, "/").replace(/~0/g, "~"))   // JSON Pointer 的转义规则
+    .reduce((node, part) =&gt; node[part], document);
+}
+
+console.log(resolvePointer(bundled, "#/components/schemas/Product/properties/id"));
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+// 依赖：io.swagger.parser.v3:swagger-parser
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.parser.OpenAPIV3Parser;
+import io.swagger.v3.parser.core.models.ParseOptions;
+
+ParseOptions options = new ParseOptions();
+options.setResolve(true);          // 解析跨文件的 $ref，收拢进本文档的 components
+options.setResolveFully(true);     // 进一步把所有 $ref 都替换成它们指向的内容
+
+OpenAPI doc = new OpenAPIV3Parser().read("shopping.openapi.yaml", null, options);
+
+var parameter = doc.getPaths().get("/products").getGet().getParameters().get(0);
+System.out.println(parameter.getName() + " ← " + parameter.getSchema().getProperties().keySet());
+// pagination ← [next, limit]     // 引用已经被库里的定义替换
+
+// 想自己动手也不难：Jackson 自带 JSON Pointer 的实现
+JsonNode tree = new YAMLMapper().readTree(new File("shopping.openapi.yaml"));
+System.out.println(tree.at("/components/schemas/Product/properties/id"));
+</pre>
+</div>
+</div>
+
+<h3>库文件必须能独立编辑</h3>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">&#10007; 不完整的片段文件</div>
+    <div class="code" data-lang="yaml" data-file="pagination-parameter.yaml"><pre>
+name: pagination
+description: Pagination parameters
+in: query
+schema: ...
+</pre></div>
+    <p style="padding:8px 14px;margin:0;font-size:14px">可以用 <code>$ref: "…/pagination-parameter.yaml"</code> 引用，但它不是合法的 OpenAPI 文件：解析器没法单独校验它，编辑器也帮不上忙。</p>
+  </div>
+  <div class="new">
+    <div class="h">&#10003; 每个库文件都是合法的文档</div>
+    <ul style="padding:10px 14px 10px 32px;margin:0;font-size:14.5px">
+      <li>一份带 <code>info</code> 和 <code>components</code> 的<strong>完整 OpenAPI 文件</strong>；或者</li>
+      <li>一份独立的 <strong>JSON Schema 文件</strong>（用 <code>$ref: "…/errors-schema.json"</code> 引用，不需要 JSON Pointer）。</li>
+    </ul>
+    <p style="padding:0 14px 10px;margin:0;font-size:14px">后者要注意工具支持：好用的 OpenAPI 图形化编辑器不一定能处理纯 JSON Schema 文件，而且它通常得是 JSON 而不是 YAML。</p>
+  </div>
+</div>
+
+<h2 id="guidelines">把 OpenAPI 的写法纳入设计指南</h2>
+
+<p>技巧这么多，很难全记住。在设计指南（第 16 章）里补充 OpenAPI 相关的内容：</p>
+<ul>
+  <li>组件库放在哪、什么时候用、怎么用；</li>
+  <li>编写 OpenAPI 文档的通用约定，例如「引用资源 ID 的 schema 时一律用深层引用，不单独定义微型 schema」「所有 <code>500</code> 必须引用共享的 <code>UnexpectedError</code>」。</li>
+</ul>
+<p>下一章会讲如何<strong>自动检查</strong>这些约定有没有被遵守。</p>
+
+<div class="tw">
+<table>
+  <tr><th>要解决的重复</th><th>技巧</th></tr>
+  <tr><td>同一个模型在多处出现</td><td><code>components.schemas</code> + <code>$ref</code></td></tr>
+  <tr><td>模型的某个属性被别处重复定义</td><td>深层引用 <code>…/Product/properties/id</code></td></tr>
+  <tr><td>通用 schema 的描述不贴合上下文</td><td>在 <code>$ref</code> 旁边写 <code>description</code> 覆盖（3.1）</td></tr>
+  <tr><td>输入模型和输出模型几乎一样</td><td><code>readOnly</code>（慎用 <code>writeOnly</code>）</td></tr>
+  <tr><td>摘要模型和完整模型有重叠</td><td><code>allOf</code>：完整 = 摘要 + 其余</td></tr>
+  <tr><td>路径下所有操作共用的参数</td><td>路径级 <code>parameters</code></td></tr>
+  <tr><td>多个路径共用的参数</td><td><code>components.parameters</code></td></tr>
+  <tr><td>一组总是一起出现的查询参数</td><td>对象类型的可复用查询参数</td></tr>
+  <tr><td>多个操作共用的请求体 / 响应头 / 响应</td><td><code>components.requestBodies</code> / <code>headers</code> / <code>responses</code></td></tr>
+  <tr><td>多个 API 共用的元素</td><td>外部组件库 + <code>文件#指针</code> 形式的 <code>$ref</code></td></tr>
+</table>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>不要让复杂的 OpenAPI 技巧干扰 HTTP 和数据建模。先把必要的信息写进文档，之后再优化。</li>
+  <li>在 <code>components.schemas</code> 下定义可复用的 schema，用 <code>$ref</code> 引用，以保证一致。</li>
+  <li>在 <code>$ref</code> 旁边放一个 <code>description</code>，可以覆盖任何可复用组件的描述（OpenAPI 3.1）。</li>
+  <li>用深层引用指向 schema 的内部，避免定义大量微型 schema。</li>
+  <li>用 <code>readOnly</code> 标志创建读写合一的 schema；<code>writeOnly</code> 可能在请求与响应之间引入有风险的不一致。</li>
+  <li>用 <code>allOf</code> 把摘要 schema 和包含其余属性的内联 schema 合并，定义出完整的 schema。</li>
+  <li>在优化和它带来的复杂度之间找到平衡。</li>
+  <li>路径下所有操作共用的参数一律定义在路径级。</li>
+  <li>可复用的参数、请求体、响应头、响应分别定义在 <code>components</code> 的 <code>parameters</code>、<code>requestBodies</code>、<code>headers</code>、<code>responses</code> 下。</li>
+  <li>定义一个对象类型的可复用查询参数，就得到了一组可复用的查询参数。</li>
+  <li>把组件库定义在合法的、可独立编辑的 OpenAPI 或 JSON Schema 文件里。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <p>本仓库 <code>17. Optimizing an OpenAPI document/</code> 里的 Listing 17.21 – 17.24 是四道练习的原题，答案在 <code>Appendix - Solutions to Exercises/</code> 的 Listing A.24 – A.27。</p>
+  <ol>
+    <li>
+      <code>/authors</code> 和 <code>/books</code> 的 <code>get</code> 各自定义了 <code>401</code>（描述分别是「Unauthorized」和「Invalid token」）和 <code>500</code>（「Server error」和「Unexpected error」）。怎么优化？
+      <details class="ans"><summary>参考答案</summary>
+        两处的 <code>401</code> 和 <code>500</code> 本应相同，却已经出现了描述不一致。
+        在 <code>components.responses</code> 下定义 <code>Unauthorized</code> 和 <code>UnexpectedError</code>，两个操作都用 <code>$ref</code> 引用。它们也很适合放进跨 API 的组件库。
+      </details>
+    </li>
+    <li>
+      <code>/authors/{authorId}</code> 的 <code>get</code> 和 <code>delete</code> 各自定义了一遍 <code>authorId</code> 路径参数（<code>type: string</code>），而响应里的 <code>id</code> 属性又单独写了一遍 <code>type: string</code>。怎么优化？
+      <details class="ans"><summary>参考答案</summary>
+        ① 把 <code>authorId</code> 提到路径级的 <code>parameters</code>。
+        ② 把响应的内联 schema 提取成 <code>components.schemas.Author</code>。
+        ③ 路径参数的 schema 用深层引用：<code>$ref: "#/components/schemas/Author/properties/id"</code>。
+      </details>
+    </li>
+    <li>
+      <code>POST /authors</code> 的请求体是 <code>{name}</code>，响应体是 <code>{id, name}</code>，两者各写了一份内联 schema。怎么优化？
+      <details class="ans"><summary>参考答案</summary>
+        定义一个读写合一的 <code>Author</code> schema，把 <code>id</code> 标为 <code>readOnly: true</code>，请求体和响应体都引用它。
+      </details>
+    </li>
+    <li>
+      <code>AuthorSummary</code> 有 <code>id</code> 和 <code>name</code>；<code>Author</code> 有 <code>id</code>（<code>readOnly</code>）、<code>name</code> 和 <code>genres</code>。怎么优化？
+      <details class="ans"><summary>参考答案</summary>
+        <code>Author</code> 用 <code>allOf</code>：第一项 <code>$ref</code> 到 <code>AuthorSummary</code>，第二项只定义 <code>genres</code>。把 <code>readOnly: true</code> 移到 <code>AuthorSummary</code> 的 <code>id</code> 上。
+      </details>
+    </li>
+    <li>把第 6 章末尾的完整文档拿出来，用本章的技巧消除其中所有的重复，然后用 Redocly CLI 的 <code>bundle</code> 确认它仍然合法。</li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>

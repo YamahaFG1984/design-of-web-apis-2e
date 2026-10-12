@@ -1,0 +1,1082 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>第 14 章 · 让设计适配上下文 — Web API 设计教程</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-chapter="14">
+<div id="app">
+<aside id="sidebar"></aside>
+<main>
+
+<span class="chapter-eyebrow">第 14 章</span>
+<h1>让设计适配上下文</h1>
+<p class="lede">
+  日常手表和潜水表都是看时间的，但后者要在高压下、被戴着厚手套的人操作 —— 设计完全不同。API 也一样。
+  如果合作方需要实时知道商品价格的变动，让他们每秒读一遍全部商品显然不是好设计。
+  除了安全和效率，数据的性质、操作的性质、消费者的限制、系统和业务的现实，都会约束我们的设计。
+</p>
+
+<div class="goals">
+  <h4>本章目标</h4>
+  <ul>
+    <li>会识别、质疑、然后才适应上下文约束</li>
+    <li>处理常见的消费者和提供者限制：不支持的 HTTP 方法、不同的数据格式、计划内停机、URL 兼容性</li>
+    <li>设计文件的上传和下载，包括大文件和委托给存储系统的情况</li>
+    <li>用 Webhook 把提供者一侧发生的事件通知给消费者</li>
+    <li>用轮询和回调处理耗时很长的操作</li>
+    <li>知道什么时候该考虑 REST 以外的 API 类型</li>
+  </ul>
+</div>
+
+<div id="chapter-toc"></div>
+
+<h2 id="context">上下文如何影响设计</h2>
+
+<div class="tw">
+<table>
+  <tr><th>因素</th><th>例子</th><th>设计中要问的问题</th></tr>
+  <tr><td>消费者的限制</td><td>银行业的老系统只会用 <code>POST</code> 和 XML</td><td>目标消费者相对于我们惯常的做法有什么限制吗？</td></tr>
+  <tr><td>领域的约束</td><td>银行系统之间普遍使用 ISO 20022 XML 报文</td><td>行业、组织或领域里有既定的标准或惯例吗？</td></tr>
+  <tr><td>通信方式</td><td>「与顾问实时聊天」「有新交易时通知合作方」</td><td>需要「消费者请求—提供者响应」以外的通信方式吗？</td></tr>
+  <tr><td>数据的性质</td><td>开户要上传证件；现有的交易 ID 里含 <code>/</code></td><td>涉及文件吗？数据能安全地放进 URL 吗？</td></tr>
+  <tr><td>操作的性质</td><td>自动审核证件要 1 分钟；有时还需要人工审核</td><td>有超过几秒钟的处理吗？有人参与吗？</td></tr>
+  <tr><td>实现的限制</td><td>开发说「用 Java 实现不了部分更新」</td><td>这个真的实现不了吗？</td></tr>
+  <tr><td>基础设施与业务</td><td>转账子系统每晚 0–1 点停机跑批；跨行网络节假日关闭</td><td>能力跨了多个系统或团队吗？系统和业务是 7×24 运转的吗？</td></tr>
+</table>
+</div>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 150" role="img" aria-label="面对约束的三个步骤：识别、质疑、取舍">
+  <rect class="bx-b" x="20" y="30" width="220" height="90" rx="12"/>
+  <text class="ttl on-b" x="130" y="58" text-anchor="middle">① 识别</text>
+  <text class="sm" x="130" y="80" text-anchor="middle">在整个设计过程中持续寻找</text>
+  <text class="sm" x="130" y="98" text-anchor="middle">可能影响设计的因素</text>
+
+  <path class="ln-a" d="M240 75 H268" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-a" x="270" y="30" width="220" height="90" rx="12"/>
+  <text class="ttl on-a" x="380" y="58" text-anchor="middle">② 质疑</text>
+  <text class="sm" x="380" y="80" text-anchor="middle">找到根因：它真的无法解决、</text>
+  <text class="sm" x="380" y="98" text-anchor="middle">无法绕开吗？</text>
+
+  <path class="ln-a" d="M490 75 H518" marker-end="url(#ar-a)"/>
+
+  <rect class="bx-g" x="520" y="30" width="220" height="90" rx="12"/>
+  <text class="ttl on-g" x="630" y="58" text-anchor="middle">③ 取舍</text>
+  <text class="sm" x="630" y="80" text-anchor="middle">确认无法避免之后</text>
+  <text class="sm" x="630" y="98" text-anchor="middle">才调整设计，并保持一致</text>
+</svg>
+<figcaption>图 14-1　不要一听到「做不到」就改设计</figcaption>
+</figure>
+
+<p>
+  「Java 实现不了部分更新」？能实现。「那些消费者只会 <code>POST</code> 和 XML」？老银行系统早就支持更多了。
+  和排查性能问题一样（第 13 章），<strong>先找根因</strong>。不过，并非所有约束都是「问题」—— 有时只是需要换一种更合适的设计模式或工具。
+</p>
+
+<div class="box note">
+  <div class="t">&#9432; 取舍会变成先例</div>
+  <p>
+    如果同一个难题在不同地方反复出现，为它做的取舍就会演变成<strong>标准化的解决方案</strong>（比如用 <code>POST /search</code> 处理敏感的查询条件）。
+    要始终如一地应用它 —— 设计指南（第 16 章）会帮你做到。
+    另外，如果能力横跨多个团队，一个共享的 API 会导致归属不清和协调困难；拆成各自归属明确的 API 更好，哪怕设计上不那么理想（又是康威定律）。
+  </p>
+</div>
+
+<h2 id="constraints">常见的消费者与提供者约束</h2>
+
+<h3>消费者不支持某些 HTTP 方法</h3>
+<p>
+  现在很少见了，但值得了解。某个老应用发不了 <code>PATCH</code>，另一些发不了 <code>DELETE</code>。
+  可以让他们自己搭一层 BFF 去转换；但如果受影响的消费者很多，通行的解法是支持 <strong><code>X-HTTP-Method-Override</code></strong> 请求头
+  （没有 RFC 定义，但已是事实标准，很多 HTTP 服务器都支持）：
+</p>
+
+<div class="code" data-lang="http">
+<pre>
+POST /transfers/123
+X-HTTP-Method-Override: PATCH
+
+{ "amount": { "value": 200 } }
+</pre>
+</div>
+
+<h3>不同的消费者习惯不同的数据格式</h3>
+<p>
+  银行要提供一个核验账户信息的 API。大企业习惯 ISO 20022 的 XML 报文，初创公司习惯简单的 JSON。
+  用<strong>内容协商</strong>（第 9 章）可以同时满足两者。但要留意：如果后续的用例让 ISO 20022 反过来约束了整个设计和能力，
+  就得考虑为不同市场提供不同的 API，或者只支持一种格式 —— 这时应回到「定义」阶段和相关方澄清目标。
+</p>
+
+<h3>计划内的不可用</h3>
+<p>转账子系统每晚停一小时；跨行支付网络在元旦这样的日子关闭。前者也许可以通过改造系统解决，后者无法避免。两种设计：</p>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">拒绝，并告知何时恢复</div>
+    <div class="code" data-lang="http"><pre>
+POST /transfers
+
+HTTP/1.1 503 Service Unavailable
+Retry-After: Tue, 02 Jan 2024 00:00:00 GMT
+Content-Type: application/problem+json
+
+{ "title": "Transfers are unavailable
+            on banking holidays", ... }
+</pre></div>
+  </div>
+  <div class="new">
+    <div class="h">接受，稍后处理</div>
+    <div class="code" data-lang="http"><pre>
+POST /transfers
+
+HTTP/1.1 202 Accepted
+Location: /transfers/12345
+
+{
+  "id": "12345",
+  "status": "DELAYED",
+  "processingDate": "2024-01-02",
+  ...
+}
+</pre></div>
+  </div>
+</div>
+
+<p>
+  <code>Retry-After</code> 的值可以是 HTTP 日期，也可以是秒数（<code>3600</code>）。
+  右边的做法体验更好，但要求在接受时就完成所有必要的检查；到执行时余额不足的风险依然存在 —— 这和预约转账是同一类风险，可以接受。
+</p>
+
+<h3>数据与 URL 的兼容性</h3>
+<ul>
+  <li>
+    <strong>特殊字符。</strong>路径参数和查询参数里的 <code>/</code>、<code>?</code> 等必须做 URL 编码。如果交易 ID 是 <code>123/456</code>，消费者每次用它拼路径都得记得编码，很容易出错。
+    最好让会进 URL 的数据（尤其是 ID）不含这类字符；改不了底层数据的话，就在 API 层把它转换成 <code>123-456</code>。
+  </li>
+  <li>
+    <strong>长度。</strong>HTTP 没规定 URL 的最大长度，但各种浏览器、服务器、代理有。<strong>超过约 2000 个字符就可能出问题。</strong>
+    <code>GET /transactions?id=ID1,ID2,…</code> 一次筛 200 个 ID 就会逼近这个上限 —— 可以改用 <code>POST /transactions/search</code>（第 12 章），或者干脆让消费者分两次调用。
+  </li>
+</ul>
+
+<h2 id="files">处理文件</h2>
+
+<p>
+  交易分类的图标、PDF 对账单、开户时的居住证明照片……对 HTTP 来说，请求体里是 JSON 还是 PDF 没有区别，但设计上文件需要特别对待。
+</p>
+
+<div class="box warn">
+  <div class="t">&#9888; 上传的文件必须查毒</div>
+  <p>文件上传必须检查病毒和恶意软件。你的组织多半已经有标准化的安全上传方案；没有的话必须先定出来。无论哪种情况，都去找安全团队。</p>
+</div>
+
+<h3>在流程中收集文件</h3>
+
+<p>第 10 章设计了灵活的开户流程。现在要加上证件上传，两种常见做法：</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 240" role="img" aria-label="上传文件的两种方式：直接挂在业务资源下，或先上传到通用的文件资源再引用">
+  <rect class="bx" x="20" y="20" width="350" height="200" rx="12"/>
+  <text class="ttl" x="195" y="44" text-anchor="middle">A：文件直接挂在业务资源下</text>
+  <rect class="bx-b" x="36" y="58" width="318" height="48" rx="6"/>
+  <text class="mono sm on-b" x="46" y="78" font-weight="700">PUT</text>
+  <text class="mono sm" x="46" y="94" style="font-size:10.5px">/account-applications/123/documents/residence</text>
+  <text class="sm" x="195" y="128" text-anchor="middle">请求体就是 PDF 文件本身</text>
+  <text class="sm" x="195" y="148" text-anchor="middle"><tspan class="mono">residence</tspan> 是文档类型，充当标识符</text>
+  <text class="sm" x="195" y="174" text-anchor="middle">再 PUT 一次 = 替换；GET = 查看；DELETE = 移除</text>
+  <text class="sm on-g" x="195" y="204" text-anchor="middle">简单直接</text>
+
+  <rect class="bx" x="390" y="20" width="350" height="200" rx="12"/>
+  <text class="ttl" x="565" y="44" text-anchor="middle">B：通用的文件资源</text>
+  <rect class="bx-b" x="406" y="58" width="318" height="30" rx="6"/>
+  <text class="mono sm" x="416" y="78"><tspan class="on-b" font-weight="700">① POST</tspan> /files　　→ 返回 fileId</text>
+  <rect class="bx-b" x="406" y="96" width="318" height="48" rx="6"/>
+  <text class="mono sm on-b" x="416" y="116" font-weight="700">② PUT</text>
+  <text class="mono sm" x="416" y="132">/account-applications/123　{ …, fileId }</text>
+  <text class="sm" x="565" y="166" text-anchor="middle">可以放在一个专门的「文件 API」里</text>
+  <text class="sm" x="565" y="184" text-anchor="middle">孤儿文件由文件 API 的实现负责清理</text>
+  <text class="sm on-g" x="565" y="204" text-anchor="middle">文件可复用于不同目的；文件相关功能集中在一处</text>
+</svg>
+<figcaption>图 14-2　方案 B 的好处：同一段上传的视频既能用来识别小猫，也能用来生成文字摘要，不用重复上传</figcaption>
+</figure>
+
+<h3>一次调用同时发送数据和文件</h3>
+
+<p>
+  有时无法分步：消费者只能发一次请求，或者实现无法保存中间状态。（先质疑这个限制。）这时可以把数据和文件混在一起发，两种方式：
+</p>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">JSON + Base64 编码的文件</div>
+    <div class="code" data-lang="http"><pre>
+POST /account-applications
+Content-Type: application/json
+
+{
+  "name": "Spike Spiegel",
+  "address": { "city": "Tokyo" },
+  "documents": [
+    { "type": "identity",
+      "content": "SGVsbG8s..." },
+    { "type": "residence",
+      "content": "IFdvcmxkIQ..." }
+  ]
+}
+</pre></div>
+  </div>
+  <div class="new">
+    <div class="h">multipart/form-data</div>
+    <div class="code" data-lang="http"><pre>
+POST /account-applications
+Content-Type: multipart/form-data; boundary="--123--boundary"
+
+--123--boundary
+Content-Type: application/json
+Content-Disposition: form-data; name=data
+
+{ "name": "Spike Spiegel", "address": { ... },
+  "documents": [ { "type": "identity" },
+                 { "type": "residence" } ] }
+--123--boundary
+Content-Type: image/png
+Content-Disposition: form-data; name=documents
+
+&lt;二进制数据&gt;
+--123--boundary
+Content-Type: application/pdf
+Content-Disposition: form-data; name=documents
+
+&lt;二进制数据&gt;
+</pre></div>
+  </div>
+</div>
+
+<ul>
+  <li><strong>Base64</strong> 把二进制变成文本，但体积<strong>增大约 33%</strong>（HTTP 压缩能抵消一部分，对 JPG 来说最终大约多 5–10%）。</li>
+  <li><strong>multipart</strong> 更标准，传的是原始二进制。每个「部分」可以有自己的媒体类型；同名的多个部分（两个 <code>documents</code>）被视为数组，实现再按顺序与 <code>data.documents</code> 里的类型信息对应。</li>
+</ul>
+
+<div class="box warn">
+  <div class="t">&#9888; 混合发送的缺点</div>
+  <p>
+    数据有一个小错（比如缺了某个属性），整个请求连同所有文件都得重传；多个文件很容易撞上请求大小的上限；有些老系统处理不了 multipart 或 Base64。
+    它适合简单的场景，比如「一个文件 + 一点放不进 URL 或头里的元数据」—— 这种情况推荐 multipart。
+  </p>
+</div>
+
+<h3>响应里要不要内嵌文件</h3>
+<p>
+  「读取账户」可以返回一个 <code>iconUrl</code>，也可以直接返回 Base64 编码的 <code>icon</code>。后者省了一次调用 —— 但那次调用本来是可以缓存的。
+  如果给每笔交易都内嵌分类图标，消费者会反复下载同一张图。<strong>把文件和数据分开</strong>，文件才能被单独获取、缓存、按需要的尺寸和格式（<code>Accept</code> 头、<code>width</code>/<code>height</code> 参数）获取。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 同一个路径，文件或元数据</div>
+  <p>对同一个文件资源做内容协商：带 <code>Accept: application/json</code> 返回文件的元数据，不带则返回文件内容本身。</p>
+</div>
+
+<h3>用 OpenAPI 描述文件</h3>
+
+<p>请求体或响应体是原始文件时，只要在 <code>content</code> 下列出媒体类型，值留空对象即可（也可以用通配符 <code>image/*</code>；任意二进制用 <code>application/octet-stream</code>）：</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：14. …/Listing 14.1、14.2">
+<pre>
+paths:
+  /files:
+    post:
+      requestBody:
+        content:
+          application/pdf: {}        # 接受 PDF、PNG、JPG
+          image/png: {}
+          image/jpeg: {}
+      responses:
+        "201":
+          description: File uploaded   # 照常返回 Location 头和文件 ID
+  /files/{fileId}:
+    get:
+      responses:
+        "200":
+          description: File content or metadata
+          content:
+            application/pdf: {}      # 原始文件
+            image/png: {}
+            image/jpeg: {}
+            application/json:        # 文件的元数据
+              schema:
+                type: object
+</pre>
+</div>
+
+<p>JSON 里内嵌的 Base64 文件，用 JSON Schema 的 <code>contentMediaType</code> 和 <code>contentEncoding</code>；multipart 请求体则用 OpenAPI 的 <code>encoding</code> 对象指定每个部分允许的媒体类型：</p>
+
+<div class="code" data-lang="yaml" data-file="仓库：14. …/Listing 14.3、14.4">
+<pre>
+components:
+  schemas:
+    Account:
+      properties:
+        icon:
+          type: string
+          contentMediaType: image/png     # 字符串里装的是什么
+          contentEncoding: base64         # 它是怎么编码的
+
+paths:
+  /account-applications:
+    post:
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              properties:                 # 每个根属性是一个「部分」
+                data:                     # 对象或数组默认是 application/json
+                  properties:
+                    name:
+                      type: string
+                    documents:
+                      type: array
+                      items:
+                        properties:
+                          type:
+                            type: string
+                            enum: [identity, residence]
+                documents:
+                  type: array
+                  items:
+                    type: string
+                    format: binary        # 默认是 application/octet-stream
+            encoding:
+              documents:                  # 覆盖默认的媒体类型
+                contentType: application/pdf, image/png, image/jpeg
+</pre>
+</div>
+
+<h3>高效地处理文件</h3>
+
+<p>文件比普通数据大得多，变化却少得多，所以效率更要讲究：</p>
+
+<div class="tw">
+<table>
+  <tr><th>目标</th><th>HTTP 机制</th></tr>
+  <tr><td>没变就不重新下载</td><td>缓存与条件请求（第 13 章）。上传成功后也<strong>不要</strong>把文件原样返回，只确认并返回 ID</td></tr>
+  <tr><td>断点续传、分段并行下载</td><td>请求头 <code>Range: bytes=0-10485759</code> → <code>206 Partial Content</code>；范围无效则 <code>416 Range Not Satisfiable</code></td></tr>
+  <tr><td>分段上传</td><td><code>POST /files</code> + <code>Content-Range: 0-500/1000</code> → <code>202 Accepted</code> + <code>Location</code>；再 <code>PUT</code> 剩余部分</td></tr>
+  <tr><td>避免白传一个会被拒绝的大文件</td><td>在专用操作里公布允许的类型和大小；超限返回 <code>413 Content Too Large</code>；最后的手段是 <code>Expect: 100-continue</code>：先只发头部，服务端检查令牌、路径、<code>Content-Type</code>、<code>Content-Length</code> 后回 <code>100 Continue</code>，消费者才发送文件内容</td></tr>
+</table>
+</div>
+
+<p>这些功能自己实现起来可能很复杂，只在处理<strong>大文件</strong>时才值得；通常的做法是交给专门的文件存储系统。</p>
+
+<h3>把上传下载委托给存储系统</h3>
+
+<p>
+  出于安全、性能或架构的原因，文件常常放在专门的存储系统里（比如云上的对象存储）。理想情况下实现应该对消费者隐藏这一点。
+  但有时做不到 —— 比如我们的 API 网关会把整个请求读完再转发，处理大文件太吃资源，平台团队禁止二进制文件经过它。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 320" role="img" aria-label="委托下载用 303 重定向到签名 URL；委托上传则先调用 API 获取上传请求的描述，再直接上传到存储">
+  <text class="ttl" x="20" y="22">下载：重定向</text>
+  <rect class="bx-b" x="20" y="34" width="120" height="100" rx="10"/>
+  <text class="ttl on-b" x="80" y="88" text-anchor="middle">消费者</text>
+  <rect class="bx-a" x="290" y="34" width="140" height="44" rx="10"/>
+  <text class="ttl on-a" x="360" y="61" text-anchor="middle">银行 API</text>
+  <rect class="bx-g" x="290" y="96" width="140" height="44" rx="10"/>
+  <text class="ttl on-g" x="360" y="123" text-anchor="middle">文件存储</text>
+  <path class="ln-b" d="M140 50 H288" marker-end="url(#ar-b)"/>
+  <text class="sm" x="214" y="44" text-anchor="middle">① GET 某月的对账单</text>
+  <path class="ln-a" d="M288 68 H142" marker-end="url(#ar-a)"/>
+  <text class="sm" x="214" y="84" text-anchor="middle">③ 303 + 签名 URL</text>
+  <path class="ln-g" d="M140 112 H288" marker-end="url(#ar-g)"/>
+  <text class="sm" x="214" y="106" text-anchor="middle">④ 跟随重定向</text>
+  <path class="ln-g" d="M288 128 H142" marker-end="url(#ar-g)"/>
+  <text class="sm" x="214" y="144" text-anchor="middle">200 + PDF</text>
+  <path class="ln-d" d="M430 56 C470 56 470 118 432 118" marker-end="url(#ar)"/>
+  <text class="sm" x="476" y="84">② 生成一次性、</text>
+  <text class="sm" x="476" y="100">限时的签名 URL</text>
+  <text class="sm" x="640" y="60" text-anchor="middle">消费者不需要知道 URL</text>
+  <text class="sm" x="640" y="78" text-anchor="middle">指向哪里、长什么样，</text>
+  <text class="sm" x="640" y="96" text-anchor="middle">跟着跳就行</text>
+
+  <path class="ln-d" d="M20 164 H740"/>
+
+  <text class="ttl" x="20" y="188">上传：两步</text>
+  <rect class="bx-b" x="20" y="200" width="120" height="100" rx="10"/>
+  <text class="ttl on-b" x="80" y="254" text-anchor="middle">消费者</text>
+  <rect class="bx-a" x="290" y="200" width="140" height="44" rx="10"/>
+  <text class="ttl on-a" x="360" y="227" text-anchor="middle">银行 API</text>
+  <rect class="bx-g" x="290" y="262" width="140" height="44" rx="10"/>
+  <text class="ttl on-g" x="360" y="289" text-anchor="middle">文件存储</text>
+  <path class="ln-b" d="M140 216 H288" marker-end="url(#ar-b)"/>
+  <text class="sm" x="214" y="210" text-anchor="middle">① POST 上传请求</text>
+  <path class="ln-a" d="M288 234 H142" marker-end="url(#ar-a)"/>
+  <text class="sm" x="214" y="250" text-anchor="middle">② 200：方法 + URL + 头</text>
+  <path class="ln-g" d="M140 284 H288" marker-end="url(#ar-g)"/>
+  <text class="sm" x="214" y="278" text-anchor="middle">③ 按描述直接上传</text>
+
+  <rect class="bx" x="476" y="196" width="264" height="110" rx="8"/>
+  <text class="mono sm" x="488" y="216">{</text>
+  <text class="mono sm" x="488" y="232">  "method": "PUT",</text>
+  <text class="mono sm" x="488" y="248">  "url": "https://my-bucket…",</text>
+  <text class="mono sm" x="488" y="264">  "headers": { "Content-Type":</text>
+  <text class="mono sm" x="488" y="280">      "application/octet-stream" }</text>
+  <text class="mono sm" x="488" y="296">}</text>
+</svg>
+<figcaption>图 14-3　上传没法用重定向（那样文件还是得先经过网关）。返回方法和头是因为签名 URL 往往对它们有强制要求 —— 这正是第 8 章说的「拿来即用的数据」</figcaption>
+</figure>
+
+<div class="tabs" data-title="客户端：两步上传">
+<div class="code" data-lang="python">
+<pre>
+import httpx
+
+api = httpx.Client(base_url="https://api.bank.com", headers={"Authorization": f"Bearer {token}"})
+
+# ① 向业务 API 要一份「上传请求的描述」
+upload = api.post("/account-applications/123/documents/residence/upload-requests").json()
+
+# ② 按描述把文件直接传到存储系统 —— 不要硬编码方法和头，用返回的
+with open("proof-of-residence.pdf", "rb") as f:
+    r = httpx.request(upload["method"], upload["url"], headers=upload["headers"], content=f)
+r.raise_for_status()
+
+# 下载则简单得多：跟随 303 重定向即可
+pdf = api.get("/accounts/123/statements/2024-01", follow_redirects=True).content
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const base = "https://api.bank.com";
+const auth = { Authorization: `Bearer ${token}` };
+
+type UploadRequest = { method: string; url: string; headers: Record&lt;string, string&gt; };
+
+// ① 向业务 API 要一份「上传请求的描述」
+const upload: UploadRequest = await (
+  await fetch(`${base}/account-applications/123/documents/residence/upload-requests`, {
+    method: "POST", headers: auth,
+  })
+).json();
+
+// ② 按描述把文件直接传到存储系统 —— 不要硬编码方法和头，用返回的
+const response = await fetch(upload.url, {
+  method: upload.method,
+  headers: upload.headers,
+  body: file,                       // 浏览器里的 File，或 Node 里的 Buffer / 流
+});
+if (!response.ok) throw new Error(`Upload failed: ${response.status}`);
+
+// 下载则简单得多：fetch 默认就会跟随 303 重定向
+const pdf = await (await fetch(`${base}/accounts/123/statements/2024-01`, { headers: auth })).blob();
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+record UploadRequest(String method, String url, Map&lt;String, String&gt; headers) {}
+
+// ① 向业务 API 要一份「上传请求的描述」
+UploadRequest upload = api.post()
+    .uri("/account-applications/123/documents/residence/upload-requests")
+    .retrieve().body(UploadRequest.class);
+
+// ② 按描述把文件直接传到存储系统 —— 不要硬编码方法和头，用返回的
+HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(upload.url()))
+    .method(upload.method(), HttpRequest.BodyPublishers.ofFile(Path.of("proof-of-residence.pdf")));
+upload.headers().forEach(request::header);
+
+HttpResponse&lt;Void&gt; response = HttpClient.newHttpClient()
+    .send(request.build(), HttpResponse.BodyHandlers.discarding());
+if (response.statusCode() &gt;= 300) throw new IllegalStateException("Upload failed");
+
+// 下载则简单得多：让客户端跟随重定向即可
+HttpClient downloader = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
+</pre>
+</div>
+</div>
+
+<p>配合方案 B 的通用文件资源时，对应的是 <code>POST /file-upload-requests</code>。这样，因系统架构而产生的操作都留在文件 API 里，不会污染业务 API。</p>
+
+<h2 id="webhook">用 Webhook 通知消费者</h2>
+
+<h3>什么是 Webhook</h3>
+
+<p>
+  到目前为止都是消费者调提供者。但有时<strong>提供者需要主动联系消费者</strong>：使用银行 API 的第三方想在用户账户出现新交易时立刻知道。
+  交易随时可能发生（实时支付、刷卡）。让第三方每秒调一次「列出交易」？绝大多数时候什么都没有，白白压垮基础设施；调得不频繁，又会很晚才知道。
+</p>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 230" role="img" aria-label="轮询与 Webhook 的对比：轮询时消费者不断询问且大多落空，Webhook 时提供者在事件发生时主动调用消费者">
+  <rect class="bx-r" x="20" y="20" width="350" height="190" rx="12"/>
+  <text class="ttl on-r" x="195" y="44" text-anchor="middle">轮询（polling）</text>
+  <rect class="bx-b" x="40" y="70" width="100" height="90" rx="8"/><text x="90" y="120" text-anchor="middle">消费者</text>
+  <rect class="bx-a" x="250" y="70" width="100" height="90" rx="8"/><text x="300" y="120" text-anchor="middle">银行 API</text>
+  <path class="ln-r" d="M140 84 H248" marker-end="url(#ar-r)"/>
+  <path class="ln-r" d="M140 100 H248" marker-end="url(#ar-r)"/>
+  <path class="ln-r" d="M140 116 H248" marker-end="url(#ar-r)"/>
+  <path class="ln-r" d="M140 132 H248" marker-end="url(#ar-r)"/>
+  <path class="ln-r" d="M140 148 H248" marker-end="url(#ar-r)"/>
+  <text class="sm" x="195" y="62" text-anchor="middle">有新交易吗？×N</text>
+  <text class="sm" x="195" y="184" text-anchor="middle">大多数时候：没有</text>
+  <text class="sm" x="195" y="200" text-anchor="middle">基础设施负载高，消息仍不及时</text>
+
+  <rect class="bx-g" x="390" y="20" width="350" height="190" rx="12"/>
+  <text class="ttl on-g" x="565" y="44" text-anchor="middle">Webhook：「反向的 API」</text>
+  <rect class="bx-b" x="410" y="70" width="110" height="90" rx="8"/>
+  <text x="465" y="106" text-anchor="middle">消费者</text>
+  <text class="sm" x="465" y="126" text-anchor="middle">实现 Webhook</text>
+  <text class="mono sm" x="465" y="144" text-anchor="middle">/notifications</text>
+  <rect class="bx-a" x="620" y="70" width="100" height="90" rx="8"/>
+  <text x="670" y="106" text-anchor="middle">银行</text>
+  <text class="sm" x="670" y="126" text-anchor="middle">定义接口</text>
+  <text class="sm" x="670" y="144" text-anchor="middle">通知系统</text>
+  <path class="ln-g" d="M618 115 H522" marker-end="url(#ar-g)"/>
+  <text class="mono sm" x="570" y="106" text-anchor="middle">POST</text>
+  <text class="sm" x="565" y="184" text-anchor="middle">有新交易时，提供者调用消费者</text>
+  <text class="sm" x="565" y="200" text-anchor="middle">接口由提供者定义，由消费者实现</text>
+</svg>
+<figcaption>图 14-4　消费者在开发者门户上登记自己的 Webhook 地址（如 <code>https://consumer.com/notifications</code>），之后一有事件就会收到 <code>POST</code></figcaption>
+</figure>
+
+<h3>Webhook 应该是可选的</h3>
+<p>
+  不是所有消费者都能实现 Webhook：有的只有手机 App、没有后端；有的因为基础设施或安全原因没法对外暴露接口。
+  所以要保证他们用<strong>普通的 API 调用</strong>也能做到同样的事（只是不实时）。这可能需要补充操作：
+  现有的 <code>GET /accounts/{accountId}/transactions</code> 得逐个账户去查，不如加一个 <code>GET /transactions</code>，一次取回所有可见账户里「上次之后」的新交易。
+</p>
+
+<h3>设计 Webhook 操作</h3>
+
+<p>
+  和设计普通操作一样：满足需求、好用、高效、安全，用 OpenAPI 描述。区别是：Webhook <strong>总是 <code>POST</code></strong>，路径由消费者自己定。
+</p>
+
+<h4>使用标准的事件格式：CloudEvents</h4>
+
+<div class="code" data-lang="http">
+<pre>
+POST /notifications
+Content-Type: application/cloudevents+json
+
+{
+  "specversion": "1.0",                          // CloudEvents 的版本
+  "type": "com.banking.transaction.new",         // 事件类型（反向域名风格）
+  "source": "/transactions",                     // 事件发生的上下文
+  "id": "123",                                   // source + id 唯一标识一个事件
+  "data": {                                      // 事件自己的数据
+    "id": "123",
+    "amount": 36.2
+  }
+}
+</pre>
+</div>
+
+<p>
+  <a href="https://cloudevents.io/">CloudEvents</a> 是一个与协议无关的事件格式标准，用它可以省去自己发明格式的工夫，也便于互操作。
+  （批量发送多个事件可以用 <code>application/cloudevents-batch+json</code>，请求体是数组。）
+</p>
+
+<h4>事件里放多少数据</h4>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>轻事件（thin）</th><th>重事件（thick）</th></tr>
+  <tr><td><code>data</code> 的内容</td><td>只有一个指针：<code>{ "href": "/transactions/123" }</code></td><td>可以直接使用的数据（相当于读取该资源的响应）</td></tr>
+  <tr><td>消费者</td><td>收到后还得调一次 API</td><td>通常不用再调</td></tr>
+  <tr><td>适合</td><td><strong>易变</strong>的数据（账户余额变化很快，发过去可能已经过时）；<strong>体积大</strong>的数据（年度对账单）</td><td><strong>小而稳定</strong>的数据（一笔交易）</td></tr>
+</table>
+</div>
+
+<p>CloudEvents 建议整个事件不超过 <strong>64 KB</strong>，以保证能在各种协议上传递。</p>
+
+<h4>安全</h4>
+<ul>
+  <li>事件里的数据同样要最小化。如果某些消费者不该看到交易的商户信息（第 12 章），发事件时也得遵守同样的规则 —— 或者改发轻事件。</li>
+  <li>Webhook 由消费者实现，但<strong>采用什么安全措施由提供者规定</strong>，确保只有我们能调用它。和安全专家确定方案：用共享密钥给消息<strong>签名</strong>、IP 白名单、双向 TLS、OAuth 2.0，可以组合使用。</li>
+</ul>
+
+<h4>期望的行为</h4>
+<p>
+  我们只需要知道消费者<strong>收到了</strong>。Webhook 回任何 <code>2XX</code> 都行，最好在几毫秒内；不需要返回数据或 <code>Location</code>。
+</p>
+
+<div class="box key">
+  <div class="t">&#9733; 实现 Webhook 的原则：收下就走</div>
+  <p>Webhook 的实现要尽量简单，才能响应快、少出错。它可以检查安全和数据格式，然后把事件放进数据库或队列 —— <strong>不要在这里处理事件</strong>，处理交给之后的另一个环节。</p>
+</div>
+
+<div class="tabs" data-title="消费者一侧：实现 Webhook 接收端">
+<div class="code" data-lang="python" data-file="FastAPI">
+<pre>
+import hashlib, hmac
+from fastapi import FastAPI, Header, HTTPException, Request, Response
+
+app = FastAPI()
+SECRET = settings.webhook_secret.encode()          # 与提供者共享的密钥
+
+@app.post("/notifications")
+async def receive_event(request: Request, x_signature: str = Header(...)):
+    raw = await request.body()
+
+    # ① 安全：验证签名，确认消息确实来自提供者且未被篡改
+    expected = hmac.new(SECRET, raw, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, x_signature):
+        raise HTTPException(401, "Invalid signature")
+
+    # ② 格式：只做最基本的检查
+    event = await request.json()
+    if event.get("specversion") != "1.0" or "type" not in event:
+        raise HTTPException(400, "Not a CloudEvents 1.0 event")
+
+    # ③ 去重：提供者可能重发；source + id 唯一标识一个事件
+    key = f"{event['source']}#{event['id']}"
+    if not seen_events.add_if_absent(key):
+        return Response(status_code=204)           # 已经收过，直接确认
+
+    # ④ 入队，立刻返回。真正的处理由后台消费者完成
+    await queue.put(event)
+    return Response(status_code=204)
+</pre>
+</div>
+<div class="code" data-lang="ts" data-file="Hono">
+<pre>
+import { Hono } from "hono";
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+const app = new Hono();
+const SECRET = process.env.WEBHOOK_SECRET!;        // 与提供者共享的密钥
+
+type CloudEvent&lt;T = unknown&gt; = { specversion: string; type: string; source: string; id: string; data: T };
+
+app.post("/notifications", async (c) =&gt; {
+  const raw = await c.req.text();
+
+  // ① 安全：验证签名，确认消息确实来自提供者且未被篡改
+  const expected = createHmac("sha256", SECRET).update(raw).digest("hex");
+  const received = c.req.header("X-Signature") ?? "";
+  if (expected.length !== received.length ||
+      !timingSafeEqual(Buffer.from(expected), Buffer.from(received))) {
+    return c.json({ message: "Invalid signature" }, 401);
+  }
+
+  // ② 格式：只做最基本的检查
+  const event: CloudEvent = JSON.parse(raw);
+  if (event.specversion !== "1.0" || !event.type) {
+    return c.json({ message: "Not a CloudEvents 1.0 event" }, 400);
+  }
+
+  // ③ 去重：提供者可能重发；source + id 唯一标识一个事件
+  if (!(await seenEvents.addIfAbsent(`${event.source}#${event.id}`))) {
+    return c.body(null, 204);                      // 已经收过，直接确认
+  }
+
+  // ④ 入队，立刻返回。真正的处理由后台消费者完成
+  await queue.send(event);
+  return c.body(null, 204);
+});
+</pre>
+</div>
+<div class="code" data-lang="java" data-file="Spring Boot">
+<pre>
+@RestController
+public class WebhookController {
+
+    record CloudEvent(String specversion, String type, String source, String id, JsonNode data) {}
+
+    @PostMapping(path = "/notifications", consumes = "application/cloudevents+json")
+    public ResponseEntity&lt;Void&gt; receiveEvent(@RequestBody byte[] raw,
+                                             @RequestHeader("X-Signature") String signature)
+            throws Exception {
+        // ① 安全：验证签名，确认消息确实来自提供者且未被篡改
+        Mac mac = Mac.getInstance("HmacSHA256");
+        mac.init(new SecretKeySpec(webhookSecret, "HmacSHA256"));
+        String expected = HexFormat.of().formatHex(mac.doFinal(raw));
+        if (!MessageDigest.isEqual(expected.getBytes(), signature.getBytes())) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+
+        // ② 格式：只做最基本的检查
+        CloudEvent event = objectMapper.readValue(raw, CloudEvent.class);
+        if (!"1.0".equals(event.specversion()) || event.type() == null) {
+            return ResponseEntity.badRequest().build();
+        }
+
+        // ③ 去重：提供者可能重发；source + id 唯一标识一个事件
+        if (!seenEvents.addIfAbsent(event.source() + "#" + event.id())) {
+            return ResponseEntity.noContent().build();     // 已经收过，直接确认
+        }
+
+        // ④ 入队，立刻返回。真正的处理由后台消费者完成
+        queue.send(event);
+        return ResponseEntity.noContent().build();
+    }
+}
+</pre>
+</div>
+</div>
+
+<h4>调用失败了怎么办</h4>
+
+<p>消费者的 Webhook 超时了，或者返回了非 <code>2XX</code>。可以提供的补救手段，由简到繁：</p>
+<ol>
+  <li>让消费者用<strong>普通操作</strong>自己补（<code>GET /transactions</code>）—— 但不同的事件要调不同的操作，消费者实现起来麻烦；</li>
+  <li>提供专门的「<strong>列出通知</strong>」操作，可以筛出未送达的；</li>
+  <li>提供<strong>按需重发</strong>（通过开发者门户或一个 API 操作），让补发的事件走和正常事件一样的通道；</li>
+  <li><strong>自动重试</strong>，但要有上限（例如 24 小时内最多 5 次），超过后由消费者按需重发。</li>
+</ol>
+
+<p>要不要建事件历史和重试机制、做到什么程度，和架构师一起评估。GitHub、PayPal 这些成熟 API 的 Webhook 文档很值得参考。</p>
+
+<h4>用 OpenAPI 描述 Webhook</h4>
+
+<div class="code" data-lang="yaml">
+<pre>
+openapi: "3.1.0"
+info: ...
+paths:                               # 普通操作
+  /accounts:
+    get: ...
+webhooks:                            # 由消费者实现的 Webhook
+  TransactionNotification:           # 不是路径，而是一个标识符（路径由消费者定）
+    post:
+      summary: New transaction
+      description: |
+        To be implemented by consumers. Events are resent up to 5 times
+        over 24 hours in case of failure. Must respond in less than 200 ms.
+      security:
+        - WebhookMutualTLS: []
+      requestBody:
+        content:
+          application/cloudevents+json:
+            schema:
+              $ref: "#/components/schemas/TransactionEvent"
+      responses:
+        "2XX":                       # OpenAPI 支持状态码通配符
+          description: Event successfully sent
+components:
+  securitySchemes:
+    WebhookMutualTLS:
+      type: mutualTLS
+</pre>
+</div>
+
+<p><code>webhooks</code> 是 OpenAPI 3.1 才有的。除了键是标识符而不是路径，其余和普通操作的写法完全一样。用 <code>description</code> 写明调用方的行为（重试策略）和对实现的期望（响应时间）。</p>
+
+<h2 id="long">耗时很长的操作</h2>
+
+<p>
+  有些操作要几分钟甚至几小时：在一段两小时的视频里找小猫，或者银行的<strong>市场压力测试模拟</strong>（最长一小时）。
+  技术上可以让消费者一直等着，但应该避免：连接数和基础设施会吃紧；连接一旦因超时中断，消费者得从头再来，之前的计算全白费。
+</p>
+
+<h3>发起 + 轮询</h3>
+
+<figure>
+<svg class="dgm" viewBox="0 0 760 270" role="img" aria-label="长操作的轮询流程：POST 返回 202 和 Location，之后消费者根据进度信息轮询 GET，直到状态变为 DONE">
+  <rect class="bx-b" x="20" y="20" width="110" height="230" rx="10"/>
+  <text class="ttl on-b" x="75" y="44" text-anchor="middle">消费者</text>
+  <rect class="bx-a" x="630" y="20" width="110" height="230" rx="10"/>
+  <text class="ttl on-a" x="685" y="44" text-anchor="middle">银行 API</text>
+
+  <path class="ln-b" d="M130 72 H628" marker-end="url(#ar-b)"/>
+  <text class="mono sm" x="150" y="64">POST /simulations</text>
+  <path class="ln-g" d="M628 96 H132" marker-end="url(#ar-g)"/>
+  <text class="mono sm on-g" x="150" y="114" font-weight="700">202 Accepted</text>
+  <text class="mono sm" x="270" y="114">Location: /simulations/12345　status: IN_PROGRESS</text>
+
+  <path class="ln-b" d="M130 150 H628" marker-end="url(#ar-b)"/>
+  <text class="mono sm" x="150" y="142">GET /simulations/12345</text>
+  <path class="ln-g" d="M628 174 H132" marker-end="url(#ar-g)"/>
+  <text class="mono sm" x="150" y="192">200　{ "status": "IN_PROGRESS", "progressPercentage": 31.6,</text>
+  <text class="mono sm" x="150" y="208">       "estimatedEnd": "2024-06-21T10:34:12Z" }　Retry-After: 1200</text>
+
+  <text class="sm" x="380" y="228" text-anchor="middle">…… 消费者根据进度信息决定下次什么时候再问 ……</text>
+  <path class="ln-b" d="M130 240 H628" marker-end="url(#ar-b)" stroke-dasharray="5 4"/>
+  <text class="mono sm on-g" x="380" y="262" text-anchor="middle">200　{ "status": "DONE", … }</text>
+</svg>
+<figcaption>图 14-5　<code>202 Accepted</code>：「收到了，正在处理」。对随机事件来说轮询很低效，但长操作的进度是可以预估的，轮询因此可以被优化</figcaption>
+</figure>
+
+<p>
+  关键是<strong>给消费者足够的信息来优化轮询</strong>：进度百分比、进度速率、预计结束时间。也可以在 <code>GET</code> 的成功响应里带上 <code>Retry-After</code>（不常见，但在这里很合理）。
+</p>
+
+<div class="tabs" data-title="客户端：发起长操作并轮询">
+<div class="code" data-lang="python">
+<pre>
+import time
+import httpx
+
+api = httpx.Client(base_url="https://api.bank.com")
+
+# ① 发起：立刻得到 202 和状态资源的地址
+started = api.post("/simulations", json={"scenario": "market-crash"})
+assert started.status_code == 202
+status_url = started.headers["Location"]           # /simulations/12345
+
+# ② 轮询：听服务端的话，别自己猜间隔
+while True:
+    r = api.get(status_url)
+    simulation = r.json()
+    if simulation["status"] != "IN_PROGRESS":
+        break
+    print(f"进度 {simulation['progressPercentage']}%")
+    time.sleep(int(r.headers.get("Retry-After", 30)))   # 服务端建议多久后再来
+
+print("结果：", simulation["status"])
+</pre>
+</div>
+<div class="code" data-lang="ts">
+<pre>
+const base = "https://api.bank.com";
+const sleep = (seconds: number) =&gt; new Promise((r) =&gt; setTimeout(r, seconds * 1000));
+
+type Simulation = { id: string; status: "IN_PROGRESS" | "DONE" | "FAILED"; progressPercentage?: number };
+
+// ① 发起：立刻得到 202 和状态资源的地址
+const started = await fetch(`${base}/simulations`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ scenario: "market-crash" }),
+});
+if (started.status !== 202) throw new Error(`Unexpected status ${started.status}`);
+const statusUrl = base + started.headers.get("Location");   // /simulations/12345
+
+// ② 轮询：听服务端的话，别自己猜间隔
+let simulation: Simulation;
+while (true) {
+  const response = await fetch(statusUrl);
+  simulation = await response.json();
+  if (simulation.status !== "IN_PROGRESS") break;
+  console.log(`进度 ${simulation.progressPercentage}%`);
+  await sleep(Number(response.headers.get("Retry-After") ?? 30));   // 服务端建议多久后再来
+}
+
+console.log("结果：", simulation.status);
+</pre>
+</div>
+<div class="code" data-lang="java">
+<pre>
+record Simulation(String id, String status, Double progressPercentage) {}
+
+// ① 发起：立刻得到 202 和状态资源的地址
+ResponseEntity&lt;Simulation&gt; started = api.post().uri("/simulations")
+    .body(Map.of("scenario", "market-crash"))
+    .retrieve().toEntity(Simulation.class);
+if (started.getStatusCode() != HttpStatus.ACCEPTED) throw new IllegalStateException();
+URI statusUri = started.getHeaders().getLocation();          // /simulations/12345
+
+// ② 轮询：听服务端的话，别自己猜间隔
+Simulation simulation;
+while (true) {
+    ResponseEntity&lt;Simulation&gt; response = api.get().uri(statusUri).retrieve().toEntity(Simulation.class);
+    simulation = response.getBody();
+    if (!"IN_PROGRESS".equals(simulation.status())) break;
+    System.out.printf("进度 %.1f%%%n", simulation.progressPercentage());
+
+    String retryAfter = response.getHeaders().getFirst(HttpHeaders.RETRY_AFTER);
+    Thread.sleep(Duration.ofSeconds(retryAfter != null ? Long.parseLong(retryAfter) : 30));
+}
+
+System.out.println("结果：" + simulation.status());
+</pre>
+</div>
+</div>
+
+<h3>用回调代替轮询</h3>
+
+<p>
+  也可以在操作结束时主动通知消费者。这叫<strong>回调（callback）</strong>，和 Webhook 是同一种东西 —— 由提供者定义、由消费者实现的反向 API。本教程这样区分两个词：
+</p>
+
+<div class="tw">
+<table>
+  <tr><th></th><th>触发原因</th><th>例子</th></tr>
+  <tr><td><strong>Webhook</strong></td><td><strong>提供者</strong>一侧发生的事件</td><td>刷卡产生了一笔新交易</td></tr>
+  <tr><td><strong>回调</strong></td><td><strong>消费者</strong>之前发起的动作有了结果</td><td>消费者启动的模拟跑完了</td></tr>
+</table>
+</div>
+
+<p>
+  设计上没有区别，所以保持一致：同样的 CloudEvents 格式、同样的安全配置、同样在开发者门户上登记的 URL。
+  事件类型是 <code>com.banking.simulation.end</code>；因为模拟结果数据量巨大，用<strong>轻事件</strong>，只带一个指向模拟资源的引用。
+</p>
+
+<p>在 OpenAPI 里，回调可以像 Webhook 一样写在 <code>webhooks</code> 下；但更明确的做法是写在<strong>发起它的那个操作</strong>的 <code>callbacks</code> 里：</p>
+
+<div class="code" data-lang="yaml">
+<pre>
+paths:
+  /simulations:
+    post:
+      summary: Run market stress simulation
+      responses:
+        "202":
+          description: Simulation started
+      callbacks:                         # 与 responses 同级
+        SimulationEnd:                   # 回调的标识符
+          "{webhookUrl}":                # 回调的 URL：可以是固定的，也可以含运行时变量
+            post:
+              summary: Simulation has ended
+              security:
+                - WebhookMutualTLS: []
+              requestBody:
+                content:
+                  application/cloudevents+json:
+                    schema:
+                      $ref: "#/components/schemas/SimulationEndEvent"
+              responses:
+                "2XX":
+                  description: Event successfully sent
+</pre>
+</div>
+
+<p>
+  回调的 URL 可以引用请求或响应里的数据。如果让消费者在发起时通过查询参数指定（<code>POST /simulations?callback=https://…</code>），这里就写 <code>{$request.query.callback}</code>。
+  我们选择所有 Webhook 和回调共用开发者门户上登记的地址，所以用了一个自定义变量 <code>{webhookUrl}</code>。
+</p>
+
+<div class="box tip">
+  <div class="t">&#128161; 常见的语法错误</div>
+  <p>编辑器报错时，检查两点：<code>callbacks</code> 是否和 <code>responses</code> 同级；回调是否<strong>先有标识符、再有 URL</strong> 两层（很容易漏掉其中一层）。</p>
+</div>
+
+<h3>让消费者选择执行方式</h3>
+<p>
+  对能力非常有限的消费者，可以用 <code>Prefer</code> 头（第 13 章）让他们选择同步执行：<code>Prefer: response=synchronous</code> 会一直等到模拟结束才返回 <code>201 Created</code>；
+  不带或 <code>response=asynchronous</code> 则立即返回 <code>202</code>。同步执行并不高效，慎用，并用行为调节型作用域（如 <code>simulation:run:synchronous</code>）只开放给选定的消费者。
+</p>
+
+<h2 id="types">考虑 REST 以外的 API 类型</h2>
+
+<div class="box deep">
+  <div class="t">&#128296; 工具定律</div>
+  <p>「手里只有锤子，看什么都像钉子。」对熟悉工具的过度依赖是一种认知偏差。API 类型和方案里的其他部分一样，应该根据需求和上下文来选。作为设计者，了解这些替代方案能帮你及时发现问题、提醒架构师。</p>
+</div>
+
+<div class="tw">
+<table>
+  <tr><th>类型</th><th>擅长什么</th><th>例子</th><th>注意</th></tr>
+  <tr>
+    <td><strong>事件驱动架构（EDA）</strong></td>
+    <td><strong>内部</strong>系统之间发送事件：提供者往消息通道发布，消费者订阅</td>
+    <td>交易系统发布「新交易」事件。对外的 Webhook 背后可以就是它</td>
+    <td>Webhook 适合跨互联网；内部用 EDA 更合适</td>
+  </tr>
+  <tr>
+    <td><strong>Server-Sent Events（SSE）</strong></td>
+    <td>服务端通过 HTTP 向客户端<strong>单向流式</strong>推送文本</td>
+    <td>模拟的实时进度、实时行情、AI 回复的流式输出</td>
+    <td>只需一次普通的 HTTP 调用，常与 REST 搭配；但长连接耗资源</td>
+  </tr>
+  <tr>
+    <td><strong>WebSocket</strong></td>
+    <td><strong>双向</strong>实时通信，文本和二进制都行</td>
+    <td>户主与银行顾问聊天</td>
+    <td>大量连接耗资源；防火墙和代理可能拦截</td>
+  </tr>
+  <tr>
+    <td><strong>GraphQL</strong></td>
+    <td>聚合多个 API 的数据；精确选择要取的字段；有订阅机制</td>
+    <td>为前端做的 BFF（第 13 章）</td>
+    <td>缓存、防止过于复杂的查询、安全都有挑战。不需要它的独特功能时，设计良好的 REST + HTTP/2 就够了</td>
+  </tr>
+  <tr>
+    <td><strong>gRPC</strong></td>
+    <td>充分利用 HTTP/2（含双向流）；Protobuf 二进制格式更紧凑、序列化更快</td>
+    <td>微服务之间大量的内部通信</td>
+    <td>浏览器不支持</td>
+  </tr>
+</table>
+</div>
+
+<h3>什么时候选</h3>
+
+<p>通常进入设计阶段时，团队已经有一套默认的技术栈和 API 类型。但需求分析可能揭示出与默认选择不相容的要求：</p>
+
+<div class="vs">
+  <div class="old">
+    <div class="h">默认是 REST，遇到这些时考虑别的</div>
+    <ul style="padding:10px 14px 10px 32px;margin:0;font-size:14.5px">
+      <li>需要向消费者流式推送数据 → SSE</li>
+      <li>需要双向通信 → WebSocket</li>
+      <li>需要向内部系统发送事件 → EDA</li>
+      <li>要做 BFF，且确实需要其独特功能 → GraphQL</li>
+    </ul>
+  </div>
+  <div class="new">
+    <div class="h">默认不是 REST，遇到这些时考虑 REST</div>
+    <ul style="padding:10px 14px 10px 32px;margin:0;font-size:14.5px">
+      <li>设计公开或合作伙伴 API（绝大多数是 REST）</li>
+      <li>私有 API 将来可能对外开放</li>
+      <li>API 要被浏览器调用</li>
+      <li>需要跨互联网的「提供者 → 消费者」通信（HTTP Webhook / 回调）</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="summary">本章小结</h2>
+
+<div class="summary">
+<ul>
+  <li>先质疑约束，确认它无法解决，再调整设计。</li>
+  <li>用 <code>X-HTTP-Method-Override</code> 请求头让消费者调用他们发不出的方法。</li>
+  <li>格式差异不影响流程时，用内容协商提供多种格式；否则考虑分成不同的 API，或只支持一种。</li>
+  <li>计划内不可用：返回 <code>503</code> 和 <code>Retry-After</code>，或者接受请求稍后处理并返回 <code>202 Accepted</code>。</li>
+  <li>确保数据（尤其是 ID）能安全地放进 URL，且 URL 不超过约 2000 个字符。</li>
+  <li>流程中上传文件：用通用的文件资源（<code>POST /files</code>）再关联到业务资源，或直接挂在业务资源下。</li>
+  <li>可以用 Base64 或 multipart 混合文件和数据，但要注意效率。</li>
+  <li>OpenAPI 中：原始文件只需在 <code>content</code> 下列出媒体类型；Base64 文件用 <code>contentMediaType</code> 和 <code>contentEncoding</code>；multipart 用 <code>encoding</code> 对象。</li>
+  <li>文件要启用缓存；创建或上传时不回传文件。大文件可支持分段下载（<code>Range</code>）、分段上传（<code>Content-Range</code>）和上传预检（<code>Expect: 100-continue</code>）—— 最好依托文件管理系统。</li>
+  <li>从第三方系统下载：用 <code>303 See Other</code> 重定向到安全的 URL。上传：返回安全 URL、HTTP 方法和头。</li>
+  <li>定义由消费者实现的 Webhook 来通知提供者一侧的事件，避免低效的轮询；但要让消费者不靠 Webhook 也能取到数据。</li>
+  <li>用 CloudEvents 标准设计事件。易变或庞大的数据用轻事件，小而稳定的数据用重事件。</li>
+  <li>考虑提供事件重发或历史事件查询，以应对失败。</li>
+  <li>Webhook 写在 OpenAPI 的 <code>webhooks</code> 下；长操作的回调写在该操作的 <code>callbacks</code> 下。</li>
+  <li>长操作：返回 <code>202</code>，提供进度信息或 <code>Retry-After</code> 来优化轮询；或用回调通知结束。</li>
+  <li>需要流式数据、双向通信、内部事件、高度定制的 BFF 时，考虑 REST 以外的 API 类型。</li>
+</ul>
+</div>
+
+<div class="exercise">
+  <h3>动手练习</h3>
+  <ol>
+    <li>
+      「木材即服务」公司提供按尺寸定制的木板，想用 API 实现自动下单。但订单需要人工审核，所以只能在工作时间处理。怎么调整设计？
+      <details class="ans"><summary>参考答案</summary>
+        先质疑：人工审核真的必要吗？能否只对异常订单做？如果确实无法避免：
+        ① 下单是一个<strong>长操作</strong>（有人参与）：<code>POST /orders</code> 返回 <code>202 Accepted</code>，订单状态为 <code>PENDING_VALIDATION</code>，并给出预计审核时间；消费者通过 <code>GET /orders/{id}</code> 轮询，或通过回调/Webhook 得知审核结果。
+        ② 非工作时间：与其返回 <code>503</code>，不如照常接受订单排队（<code>202</code> + 预计处理时间）—— 对消费者友好得多。
+      </details>
+    </li>
+    <li>
+      快递公司的 API 因为消费者反复调用 <code>GET /shipments</code> 和 <code>GET /shipments/{shipmentId}</code> 查物流状态而过载。怎么办？
+      <details class="ans"><summary>参考答案</summary>
+        提供 Webhook（如 <code>com.vfs.shipment.status-changed</code> 事件）在状态变化时主动通知，消除轮询的理由。
+        对无法实现 Webhook 的消费者：启用缓存与条件请求（<code>ETag</code>/<code>304</code>）、在响应里给出预计的下次更新时间、提供「某时间点之后有变化的运单」筛选；
+        并配合限流和限流信息头。
+      </details>
+    </li>
+    <li>
+      音乐分析 API 只有一个操作：请求体里是 Base64 编码的音视频文件和一组处理任务（测速、识别和弦、生成伴奏……），每个任务对每分钟音频要处理 1 秒到 1 分钟；响应一次性返回所有结果，其中可能包含 Base64 编码的文件。用户常常分几轮对同一个文件做不同的处理。有哪些问题？
+      <details class="ans"><summary>参考答案</summary>
+        ① 大文件用 Base64 塞在 JSON 里：体积膨胀、任务参数写错一点就得重传；而且每轮处理都要重传同一个文件 → 先 <code>POST /files</code>（或两步上传）得到 <code>fileId</code>，之后的处理请求只引用它。
+        ② 处理可能长达数分钟乃至更久，却是同步调用 → <code>POST /processing-tasks</code> 返回 <code>202</code>，提供进度与轮询，或用回调通知完成。
+        ③ 结果里内嵌 Base64 文件 → 返回生成文件的 ID/URL，按需单独下载（可缓存、可断点续传）。
+        ④ 一个操作里混着性质不同的任务和结果 → 每个任务成为独立的资源，各有自己的状态和结果。
+      </details>
+    </li>
+  </ol>
+</div>
+
+<div id="pager"></div>
+
+</main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>
